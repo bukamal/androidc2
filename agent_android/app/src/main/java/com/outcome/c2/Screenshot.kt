@@ -1,13 +1,12 @@
 package com.outcome.c2
 
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
-import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -20,19 +19,11 @@ import java.util.concurrent.TimeUnit
 
 object Screenshot {
 
-    fun capture(ctx: Context): JSONObject {
-        val prefs = ctx.getSharedPreferences("c2", Context.MODE_PRIVATE)
-        val resultCode = prefs.getInt("proj_code", Int.MIN_VALUE)
-        val dataStr = prefs.getString("proj_data", null)
-        if (resultCode == Int.MIN_VALUE || dataStr == null) {
-            return JSONObject().put("error", "projection_permission_not_granted")
-        }
-
-        val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val projData = Intent.parseUri(dataStr, 0)
-        val projection = mpm.getMediaProjection(resultCode, projData)
-            ?: return JSONObject().put("error", "media_projection_null")
-
+    /**
+     * Capture using a live MediaProjection instance.
+     * MediaProjection is created once by C2Service and reused.
+     */
+    fun capture(ctx: Context, projection: MediaProjection): JSONObject {
         val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
@@ -51,6 +42,7 @@ object Screenshot {
         val latch = CountDownLatch(1)
         var bmp: Bitmap? = null
         val handler = Handler(Looper.getMainLooper())
+
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -71,10 +63,9 @@ object Screenshot {
             }
         }, handler)
 
-        latch.await(3, TimeUnit.SECONDS)
+        latch.await(4, TimeUnit.SECONDS)
         reader.setOnImageAvailableListener(null, null)
-        vd.release()
-        projection.stop()
+        try { vd.release() } catch (_: Exception) {}
 
         val out = bmp ?: return JSONObject().put("error", "capture_timeout")
         val baos = ByteArrayOutputStream()

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 
 class MediaProjectionSetupActivity : Activity() {
@@ -21,6 +22,14 @@ class MediaProjectionSetupActivity : Activity() {
                 .putInt("proj_code", resultCode)
                 .putString("proj_data", data.toUri(0))
                 .apply()
+
+            // Restart C2Service so it picks up the new projection permission
+            val svc = Intent(this, C2Service::class.java)
+            stopService(svc)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                startForegroundService(svc)
+            else
+                startService(svc)
         }
         finish()
     }

