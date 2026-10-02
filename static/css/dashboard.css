@@ -25,7 +25,9 @@ body {
 
 #app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
 
-/* ---------- SIDEBAR ---------- */
+/* =========================================================
+   SIDEBAR
+   ========================================================= */
 #sidebar {
   background: linear-gradient(180deg, #070a13, #05060a);
   border-right: 1px solid var(--border);
@@ -132,9 +134,7 @@ body {
   font-family: var(--mono);
 }
 
-.mini-tags {
-  display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;
-}
+.mini-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .mini-tag {
   font-family: var(--mono);
   font-size: 8px;
@@ -146,7 +146,9 @@ body {
   letter-spacing: .05em;
 }
 
-/* ---------- MAIN ---------- */
+/* =========================================================
+   MAIN
+   ========================================================= */
 #main { position: relative; overflow: hidden; }
 
 #globe-wrap {
@@ -175,7 +177,9 @@ body {
 .globe-corner.tl { top: 12px; left: 12px; }
 .globe-corner.tr { top: 12px; right: 12px; }
 
-/* ---------- DEVICE PANEL ---------- */
+/* =========================================================
+   DEVICE PANEL
+   ========================================================= */
 #device-panel {
   position: absolute;
   top: 20px;
@@ -201,6 +205,7 @@ body {
   justify-content: space-between;
   align-items: flex-start;
 }
+.panel-head-left { flex: 1; min-width: 0; }
 .panel-head h2 {
   margin: 0 0 8px;
   font-size: 16px;
@@ -229,6 +234,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+  flex-shrink: 0;
 }
 #dev-close:hover { color: var(--danger); border-color: var(--danger); }
 
@@ -279,7 +285,9 @@ body {
 .tab-panel::-webkit-scrollbar { width: 6px; }
 .tab-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-/* ---------- COMMANDS ---------- */
+/* =========================================================
+   COMMANDS
+   ========================================================= */
 #command-catalog {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -324,7 +332,9 @@ body {
   border-radius: 3px;
 }
 
-/* ---------- TERMINAL ---------- */
+/* =========================================================
+   TERMINAL
+   ========================================================= */
 [data-panel="terminal"] {
   display: none;
   flex-direction: column;
@@ -379,7 +389,9 @@ body {
 }
 .term-input button:hover { background: #4ff0ff; }
 
-/* ---------- FILES ---------- */
+/* =========================================================
+   FILES
+   ========================================================= */
 .files-toolbar {
   display: flex;
   justify-content: space-between;
@@ -475,7 +487,9 @@ body {
   color: var(--accent);
 }
 
-/* ---------- MIRROR ---------- */
+/* =========================================================
+   MIRROR
+   ========================================================= */
 .mirror-toolbar {
   display: flex;
   gap: 10px;
@@ -522,7 +536,9 @@ body {
   z-index: 1;
 }
 
-/* ---------- LOGS ---------- */
+/* =========================================================
+   LOGS
+   ========================================================= */
 #log-stream {
   font-family: var(--mono);
   font-size: 11px;
@@ -539,7 +555,9 @@ body {
 #log-stream .log-row.err .level { color: var(--danger); }
 #log-stream .log-row .level { min-width: 50px; }
 
-/* ---------- NOTES ---------- */
+/* =========================================================
+   NOTES
+   ========================================================= */
 [data-panel="notes"].active {
   display: flex;
   flex-direction: column;
@@ -601,7 +619,9 @@ body {
   cursor: pointer;
 }
 
-/* ---------- HERO ---------- */
+/* =========================================================
+   HERO
+   ========================================================= */
 .hero {
   position: absolute;
   inset: 0;
@@ -640,7 +660,9 @@ body {
   100% { box-shadow: 0 0 0 20px rgba(0,224,255,0); }
 }
 
-/* ---------- TOAST ---------- */
+/* =========================================================
+   TOAST
+   ========================================================= */
 #toast-stack {
   position: fixed;
   bottom: 20px;
@@ -672,7 +694,9 @@ body {
   to { opacity: 1; transform: translateX(0); }
 }
 
-/* ---------- MODAL ---------- */
+/* =========================================================
+   MODAL
+   ========================================================= */
 #modal-wrap { position: fixed; inset: 0; z-index: 9000; }
 #modal-wrap.hidden { display: none; }
 .modal-backdrop {
@@ -720,6 +744,7 @@ body {
   width: 30px; height: 30px;
   border-radius: 6px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .modal-close:hover { color: var(--danger); border-color: var(--danger); }
 .modal-body {
@@ -757,3 +782,166 @@ body {
   font-size: 11px;
 }
 .viewer-binary { text-align: center; padding: 40px; color: var(--muted); }
+
+/* =========================================================
+   MOBILE RESPONSIVE
+   ========================================================= */
+
+/* تابلت (<= 900px) */
+@media (max-width: 900px) {
+  #app { grid-template-columns: 260px 1fr; }
+  .brand h1 { font-size: 13px; }
+  .stat span { font-size: 17px; }
+  #device-panel { top: 14px; left: 14px; right: 14px; bottom: 14px; }
+  .tabs button { padding: 10px 14px; font-size: 10px; }
+  .panel-head { padding: 12px 14px; }
+  .tab-panel { padding: 14px; }
+  .hero-title { font-size: 30px; letter-spacing: .3em; }
+}
+
+/* جوال عريض (<= 720px) */
+@media (max-width: 720px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  #sidebar {
+    padding: 12px;
+    max-height: 45vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    gap: 10px;
+    order: 1;
+  }
+
+  #main {
+    order: 2;
+    position: relative;
+    min-height: 55vh;
+  }
+
+  .brand { gap: 10px; }
+  .logo { width: 34px; height: 34px; border-radius: 8px; }
+  .brand h1 { font-size: 12px; letter-spacing: .14em; }
+  .brand .tag { font-size: 9px; }
+
+  .stat-grid { gap: 6px; }
+  .stat { padding: 7px 6px; border-radius: 6px; }
+  .stat span { font-size: 15px; }
+  .stat label { font-size: 9px; letter-spacing: .08em; }
+
+  .search input { padding: 8px 10px; font-size: 12px; }
+
+  #device-list { max-height: 200px; }
+  #device-list li { padding: 9px 10px; margin-bottom: 6px; }
+  #device-list .dev-name { font-size: 11px; }
+  #device-list .dev-meta { font-size: 9px; }
+
+  #globe-wrap { position: relative; height: 40vh; }
+  #globe { width: 100%; height: 100%; }
+  .globe-corner { padding: 8px 10px; font-size: 9px; letter-spacing: .15em; }
+
+  .hero-title { font-size: 22px; letter-spacing: .22em; }
+  .hero-sub { font-size: 10px; letter-spacing: .2em; }
+
+  #device-panel {
+    top: 0; left: 0; right: 0; bottom: 0;
+    border-radius: 0;
+    backdrop-filter: none;
+    background: var(--panel);
+  }
+  .panel-head {
+    padding: 12px 14px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .panel-head-left { width: 100%; }
+  #dev-close {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+  }
+  .panel-head h2 { font-size: 14px; margin-bottom: 6px; padding-left: 40px; }
+  .chip { font-size: 9px; padding: 2px 6px; }
+  .big-tag { font-size: 9px; padding: 2px 8px; }
+
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button {
+    padding: 10px 12px;
+    font-size: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .tab-panel { padding: 12px; }
+
+  #command-catalog {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .cmd-card { padding: 10px; }
+  .cmd-card .name { font-size: 11px; }
+  .cmd-card .desc { font-size: 10px; }
+
+  #terminal-out { padding: 10px; font-size: 11px; }
+  .term-input .prompt { padding: 10px 8px; font-size: 12px; }
+  .term-input input { font-size: 12px; padding: 10px 0; }
+  .term-input button { padding: 0 14px; font-size: 10px; }
+
+  #file-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .file-card .preview { height: 90px; }
+  .file-card .info { padding: 7px 8px; font-size: 9px; }
+  .file-card .info .fn { font-size: 10px; }
+  .file-card .file-actions button { padding: 7px; font-size: 8px; }
+
+  #mirror-stage { min-height: 220px; }
+  .mirror-toolbar { flex-wrap: wrap; gap: 6px; }
+  .mirror-toolbar button { font-size: 9px; padding: 6px 10px; }
+
+  #log-stream { font-size: 10px; }
+  #log-stream .log-row { padding: 4px 6px; gap: 8px; flex-wrap: wrap; }
+
+  .notes-actions { flex-wrap: wrap; }
+  .notes-actions input { font-size: 11px; padding: 7px 10px; }
+  .notes-actions button { font-size: 10px; padding: 7px 12px; }
+
+  #toast-stack { bottom: 12px; right: 12px; left: 12px; }
+  .toast { font-size: 10px; padding: 8px 12px; max-width: 100%; }
+
+  .modal {
+    width: 95vw;
+    max-height: 90vh;
+  }
+  .modal-head { padding: 12px 14px; }
+  .modal-title { font-size: 12px; }
+  .modal-sub { font-size: 9px; }
+  .modal-body { padding: 14px; font-size: 11px; }
+}
+
+/* جوال ضيق (<= 400px) */
+@media (max-width: 400px) {
+  .brand h1 { font-size: 11px; }
+  .stat span { font-size: 14px; }
+  .stat label { font-size: 8px; }
+
+  #file-grid { grid-template-columns: 1fr; }
+  .file-card .preview { height: 120px; }
+
+  .hero-title { font-size: 18px; letter-spacing: .18em; }
+
+  .tabs button { padding: 9px 10px; font-size: 9px; }
+
+  #globe-wrap { height: 35vh; }
+
+  .term-input button { padding: 0 12px; }
+}

