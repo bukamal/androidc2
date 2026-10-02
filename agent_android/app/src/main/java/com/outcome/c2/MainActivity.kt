@@ -118,6 +118,23 @@ class MainActivity : Activity() {
             }
             startActivity(i)
         }
+        btn("11. Hide app icon") {
+            val res = IconHider.hide(this@MainActivity)
+            if (res.has("error")) {
+                Toast.makeText(this@MainActivity, "failed: ${res.optString("error")}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this@MainActivity, "icon hidden. restore via adb or settings.", Toast.LENGTH_LONG).show()
+                log("main", "icon hidden")
+            }
+        }
+        btn("12. Show app icon") {
+            val res = IconHider.show(this@MainActivity)
+            if (res.has("error")) {
+                Toast.makeText(this@MainActivity, "failed: ${res.optString("error")}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this@MainActivity, "icon restored", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         root.addView(TextView(this).apply {
             text = "─ LOG ─"
