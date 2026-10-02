@@ -18,14 +18,18 @@ class MediaProjectionSetupActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQ && resultCode == RESULT_OK && data != null) {
+            // Store resultCode + raw Intent in SharedPreferences as best-effort backup
             getSharedPreferences("c2", MODE_PRIVATE).edit()
                 .putInt("proj_code", resultCode)
                 .putString("proj_data", data.toUri(0))
                 .apply()
 
-            // Restart C2Service so it picks up the new projection permission
-            val svc = Intent(this, C2Service::class.java)
-            stopService(svc)
+            // Start (or restart) service WITH the live Intent passed through
+            val svc = Intent(this, C2Service::class.java).apply {
+                action = "START_PROJECTION"
+                putExtra("proj_result_code", resultCode)
+                putExtra("proj_data", data)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 startForegroundService(svc)
             else
