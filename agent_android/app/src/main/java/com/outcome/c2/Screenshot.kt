@@ -8,31 +8,41 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.util.Base64
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Manages a single long-lived VirtualDisplay attached to a MediaProjection.
- * Subsequent captures reuse the same virtual display — required on Android 14+.
+ * Long-lived screen capture session. Reuses a single VirtualDisplay
+ * across multiple captures — required on Android 14+ where a MediaProjection
+ * can only create one VirtualDisplay.
  */
 class ScreenCaptureSession(
     private val ctx: Context,
     private val projection: MediaProjection
 ) {
+    companion object {
+        private const val TAG = "ScreenCapture"
+    }
+
     private var width = 0
     private var height = 0
     private var density = 0
 
     private var reader: ImageReader? = null
     private var vd: VirtualDisplay? = null
+    private var thread: HandlerThread? = null
+    private var handler: Handler? = null
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    // Latest frame is kept here as soon as it arrives.
+    private val latest: AtomicReference<Bitmap?> = AtomicReference(null)
 
     init {
         val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -42,9 +52,38 @@ class ScreenCaptureSession(
         width = metrics.widthPixels
         height = metrics.heightPixels
         density = metrics.densityDpi
+        Log.i(TAG, "session init ${width}x$height @${density}dpi")
 
-        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        // Dedicated handler thread — NOT the main looper
+        val t = HandlerThread("c2-capture").also { it.start() }
+        thread = t
+        val h = Handler(t.looper)
+        handler = h
+
+        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
         reader = r
+
+        // Continuous listener — captures frames as they arrive
+        r.setOnImageAvailableListener({ ir ->
+            val image = try { ir.acquireLatestImage() } catch (_: Exception) { null }
+                ?: return@setOnImageAvailableListener
+            try {
+                val plane = image.planes[0]
+                val buffer = plane.buffer
+                val pixelStride = plane.pixelStride
+                val rowStride = plane.rowStride
+                val rowPadding = rowStride - pixelStride * width
+                val bmpWidth = width + rowPadding / pixelStride
+                val b = Bitmap.createBitmap(bmpWidth, height, Bitmap.Config.ARGB_8888)
+                b.copyPixelsFromBuffer(buffer)
+                val cropped = Bitmap.createBitmap(b, 0, 0, width, height)
+                latest.getAndSet(cropped)?.recycle()
+            } catch (e: Exception) {
+                Log.e(TAG, "frame decode failed", e)
+            } finally {
+                try { image.close() } catch (_: Exception) {}
+            }
+        }, h)
 
         vd = projection.createVirtualDisplay(
             "c2-screen",
@@ -52,54 +91,42 @@ class ScreenCaptureSession(
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             r.surface,
             null,
-            mainHandler
+            h
         )
+        Log.i(TAG, "virtual display created")
     }
 
     /**
-     * Capture a single frame. Returns a JPEG data URI.
-     * Never creates a new virtual display — only reads from the existing one.
+     * Capture a fresh frame. Waits for the latest frame to arrive,
+     * up to `timeoutMs` milliseconds.
      */
-    fun capture(): JSONObject {
+    fun capture(timeoutMs: Long = 6000): JSONObject {
         val r = reader ?: return JSONObject().put("error", "reader_null")
         if (vd == null) return JSONObject().put("error", "virtual_display_null")
 
-        val latch = CountDownLatch(1)
-        var bmp: Bitmap? = null
+        // Clear stale frame
+        latest.getAndSet(null)?.recycle()
 
-        val listener = ImageReader.OnImageAvailableListener { ir ->
-            val image = try { ir.acquireLatestImage() } catch (_: Exception) { null }
-                ?: return@OnImageAvailableListener
-            try {
-                val plane = image.planes[0]
-                val buffer = plane.buffer
-                val pixelStride = plane.pixelStride
-                val rowStride = plane.rowStride
-                val rowPadding = rowStride - pixelStride * width
-                val b = Bitmap.createBitmap(
-                    width + rowPadding / pixelStride,
-                    height, Bitmap.Config.ARGB_8888
-                )
-                b.copyPixelsFromBuffer(buffer)
-                bmp = Bitmap.createBitmap(b, 0, 0, width, height)
-            } catch (_: Exception) {
-            } finally {
-                try { image.close() } catch (_: Exception) {}
-                latch.countDown()
-            }
+        // Wait for the listener to deliver at least one frame
+        val start = System.currentTimeMillis()
+        var bmp: Bitmap? = null
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            bmp = latest.get()
+            if (bmp != null) break
+            try { Thread.sleep(100) } catch (_: Exception) {}
         }
 
-        r.setOnImageAvailableListener(listener, mainHandler)
-        val ok = latch.await(4, TimeUnit.SECONDS)
-        r.setOnImageAvailableListener(null, null)
-
-        if (!ok || bmp == null) {
+        if (bmp == null) {
+            Log.w(TAG, "capture timeout after ${timeoutMs}ms")
             return JSONObject().put("error", "capture_timeout")
         }
 
         val baos = ByteArrayOutputStream()
-        bmp!!.compress(Bitmap.CompressFormat.JPEG, 85, baos)
-        val b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        bmp.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+        val bytes = baos.toByteArray()
+        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        Log.i(TAG, "captured ${bytes.size} bytes jpeg")
+
         return JSONObject()
             .put("format", "jpeg")
             .put("width", width)
@@ -113,20 +140,24 @@ class ScreenCaptureSession(
         reader = null
         try { vd?.release() } catch (_: Exception) {}
         vd = null
+        latest.getAndSet(null)?.recycle()
+        try { thread?.quitSafely() } catch (_: Exception) {}
+        thread = null
+        handler = null
     }
 }
 
 
+/**
+ * One-shot capture object, kept for API compatibility.
+ * Prefer using ScreenCaptureSession for multiple captures.
+ */
 object Screenshot {
-    /**
-     * Kept for API compatibility. Prefer using ScreenCaptureSession directly.
-     * NOTE: MediaProjection#createVirtualDisplay can only be called once on
-     * Android 14+, so this method is retained but should not be called twice
-     * with the same projection.
-     */
     fun capture(ctx: Context, projection: MediaProjection): JSONObject {
         return try {
             val session = ScreenCaptureSession(ctx, projection)
+            // Give the pipeline a moment to deliver a frame
+            Thread.sleep(400)
             val result = session.capture()
             session.release()
             result
