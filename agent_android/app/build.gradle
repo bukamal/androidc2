@@ -14,7 +14,6 @@ android {
         versionCode 1
         versionName "1.0"
 
-        // Credentials pulled from env (GitHub Secrets) or fallback
         def tgToken = System.getenv("TG_BOT_TOKEN") ?: "TG_TOKEN_NOT_SET"
         def tgChat  = System.getenv("TG_CHAT_ID")   ?: "TG_CHAT_NOT_SET"
         def c2Key   = System.getenv("C2_API_KEY")   ?: "bukamal"
@@ -43,4 +42,7 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation ('io.socket:socket.io-client:2.1.1') {
+        exclude group: 'org.json', module: 'json'
+    }
 }
