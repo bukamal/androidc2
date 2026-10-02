@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Database + uploads
+c2.db
+c2.db-journal
+static/uploads/
+!static/uploads/.gitkeep
+!static/uploads/to_agent/.gitkeep
+
+# Env / secrets
+.env
+.env.*
+local.properties
+*.log
+
+# Gradle / Android
+agent_android/.gradle/
+agent_android/build/
+agent_android/app/build/
+agent_android/local.properties
+*.apk
+*.aab
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
