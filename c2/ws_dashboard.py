@@ -23,7 +23,7 @@ def on_connect(auth=None):
 
 
 @socketio.on("subscribe", namespace="/dashboard")
-def on_subscribe(data):
+def on_subscribe(data=None):
     device_id = (data or {}).get("device_id")
     if device_id:
         join_room(f"device_{device_id}")
@@ -31,13 +31,13 @@ def on_subscribe(data):
 
 
 @socketio.on("unsubscribe", namespace="/dashboard")
-def on_unsubscribe(data):
+def on_unsubscribe(data=None):
     device_id = (data or {}).get("device_id")
     if device_id:
         leave_room(f"device_{device_id}")
 
 
 @socketio.on("subscribe_global", namespace="/dashboard")
-def on_subscribe_global(_data):
+def on_subscribe_global(_data=None):
     join_room("all_devices")
     emit("subscribed_global", {"ok": True})
