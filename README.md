@@ -68,6 +68,20 @@ cd agent_android && ./gradlew assembleDebug
 
 The APK lands in `agent_android/app/build/outputs/apk/debug/`.
 
+### Gradle wrapper
+
+`gradlew`, `gradlew.bat` and `gradle/wrapper/gradle-wrapper.jar` are binaries
+and are **not committed**. CI generates them in a throwaway project (so the
+step never has to configure the Android build) and pins the distribution
+checksum. To make local builds match CI byte-for-byte, generate them once
+locally and commit the result:
+
+```bash
+cd agent_android
+gradle wrapper --gradle-version 8.4 --distribution-type bin
+git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar
+```
+
 ## Telegram bridge
 
 ```bash

@@ -28,11 +28,63 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Preferred over `gradle wrapper` with a preinstalled gradle: the
-      # wrapper jar is not committed, and relying on the runner image is
-      # what made this job fragile.
+      # Installs a Gradle distribution and puts `gradle` on PATH. It does NOT
+      # create ./gradlew for us — see the next step.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      # gradlew / gradlew.bat / gradle-wrapper.jar are binaries and are not
+      # committed, so they get generated here.
+      #
+      # Generated in a throwaway project rather than in agent_android so this
+      # step never has to configure the Android build: no SDK lookup, no AGP
+      # resolution, no chance of the wrapper task failing for unrelated
+      # reasons. Only the three wrapper files are copied back.
+      - name: Generate Gradle wrapper
+        env:
+          GRADLE_VERSION: '8.4'
+          GRADLE_SHA256: '3e1af3ae886920c3ac87f7a91f816c0c7c436f276a6eefdb3da152100fef72ae'
+        run: |
+          set -euo pipefail
+          seed="$(mktemp -d)"
+          printf 'rootProject.name = "wrapper-seed"\n' > "$seed/settings.gradle"
+
+          (
+            cd "$seed"
+            gradle wrapper \
+              --gradle-version "$GRADLE_VERSION" \
+              --distribution-type bin \
+              --no-daemon --quiet
+          )
+
+          target="$GITHUB_WORKSPACE/agent_android"
+          cp "$seed/gradlew" "$seed/gradlew.bat" "$target/"
+          mkdir -p "$target/gradle/wrapper"
+          cp "$seed/gradle/wrapper/gradle-wrapper.jar" \
+             "$target/gradle/wrapper/"
+
+          # Pin the distribution checksum ourselves rather than via a CLI
+          # flag, so this keeps working regardless of which wrapper options
+          # the installed Gradle happens to accept. The wrapper verifies this
+          # on every distribution download.
+          props="$target/gradle/wrapper/gradle-wrapper.properties"
+          grep -v '^distributionSha256Sum=' "$seed/gradle/wrapper/gradle-wrapper.properties" \
+            > "$props"
+          echo "distributionSha256Sum=$GRADLE_SHA256" >> "$props"
+
+          chmod +x "$target/gradlew"
+
+          echo "::group::wrapper contents"
+          ls -l "$target/gradlew" "$target/gradle/wrapper/"
+          cat "$props"
+          echo "::endgroup::"
+
+      - name: Verify wrapper was generated
+        run: |
+          set -euo pipefail
+          test -x ./gradlew
+          test -f ./gradle/wrapper/gradle-wrapper.jar
+          ./gradlew --version | head -5
 
       - name: Configure Android SDK
         run: |
