@@ -10,12 +10,20 @@ def requireEnv(String name) {
     def value = System.getenv(name)
     if (value == null || value.trim().isEmpty()) {
         throw new GradleException(
-            "Missing environment variable ${name}. " +
-            "Set it before building (see .env.example). " +
+            "Missing environment variable ${name}.\n" +
+            "  locally : export it in your shell (see .env.example)\n" +
+            "  in CI   : Settings -> Secrets and variables -> Actions -> ${name}\n" +
             "Refusing to embed a placeholder credential into the APK."
         )
     }
-    return value.trim().replace("\\", "\\\\").replace("\"", "\\\"")
+    // A newline here would produce an invalid Java string literal in
+    // BuildConfig, so collapse anything that got pasted in by accident.
+    // Backslashes and quotes are escaped because buildConfigField takes a
+    // raw Java literal.
+    return value.trim()
+                .replaceAll(/[\r\n]+/, "")
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
 }
 
 android {

