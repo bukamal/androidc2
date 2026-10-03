@@ -6,23 +6,25 @@ import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Base64
 import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Surface
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Long-lived screen capture session. Reuses a single VirtualDisplay
- * across multiple captures — required on Android 14+ where a MediaProjection
- * can only create one VirtualDisplay.
+ * Persistent screen capture session. Owns ONE VirtualDisplay
+ * for its entire lifetime. Screenshots read from ImageReader,
+ * screen recording swaps the surface temporarily to a MediaRecorder.
  */
 class ScreenCaptureSession(
     private val ctx: Context,
@@ -41,8 +43,12 @@ class ScreenCaptureSession(
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
 
-    // Latest frame is kept here as soon as it arrives.
     private val latest: AtomicReference<Bitmap?> = AtomicReference(null)
+
+    // Recording state
+    @Volatile private var recorder: MediaRecorder? = null
+    @Volatile private var recordingFile: File? = null
+    @Volatile private var recording = false
 
     init {
         val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -54,7 +60,6 @@ class ScreenCaptureSession(
         density = metrics.densityDpi
         Log.i(TAG, "session init ${width}x$height @${density}dpi")
 
-        // Dedicated handler thread — NOT the main looper
         val t = HandlerThread("c2-capture").also { it.start() }
         thread = t
         val h = Handler(t.looper)
@@ -63,8 +68,13 @@ class ScreenCaptureSession(
         val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
         reader = r
 
-        // Continuous listener — captures frames as they arrive
         r.setOnImageAvailableListener({ ir ->
+            // Only process frames when NOT recording
+            if (recording) {
+                val img = try { ir.acquireLatestImage() } catch (_: Exception) { null }
+                try { img?.close() } catch (_: Exception) {}
+                return@setOnImageAvailableListener
+            }
             val image = try { ir.acquireLatestImage() } catch (_: Exception) { null }
                 ?: return@setOnImageAvailableListener
             try {
@@ -97,17 +107,17 @@ class ScreenCaptureSession(
     }
 
     /**
-     * Capture a fresh frame. Waits for the latest frame to arrive,
-     * up to `timeoutMs` milliseconds.
+     * Capture a fresh frame from the ImageReader.
      */
     fun capture(timeoutMs: Long = 6000): JSONObject {
+        if (recording) {
+            return JSONObject().put("error", "recording_in_progress")
+        }
         val r = reader ?: return JSONObject().put("error", "reader_null")
         if (vd == null) return JSONObject().put("error", "virtual_display_null")
 
-        // Clear stale frame
         latest.getAndSet(null)?.recycle()
 
-        // Wait for the listener to deliver at least one frame
         val start = System.currentTimeMillis()
         var bmp: Bitmap? = null
         while (System.currentTimeMillis() - start < timeoutMs) {
@@ -134,7 +144,106 @@ class ScreenCaptureSession(
             .put("data_b64", b64)
     }
 
+    /**
+     * Start screen recording on the SAME virtual display.
+     * Swaps surface to MediaRecorder. Captures stop working until stopRecording().
+     */
+    fun startRecording(durationSec: Int = 30): JSONObject {
+        if (recording) {
+            return JSONObject().put("error", "already_recording")
+        }
+        val display = vd ?: return JSONObject().put("error", "no_virtual_display")
+        val r = reader ?: return JSONObject().put("error", "no_reader")
+
+        try {
+            val dir = File(ctx.cacheDir, "recordings")
+            if (!dir.exists()) dir.mkdirs()
+            val out = File(dir, "rec_${System.currentTimeMillis()}.mp4")
+            recordingFile = out
+
+            val rec = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx)
+                      else @Suppress("DEPRECATION") MediaRecorder()
+
+            rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            rec.setVideoSize(width, height)
+            rec.setVideoFrameRate(30)
+            rec.setVideoEncodingBitRate(6_000_000)
+            rec.setOutputFile(out.absolutePath)
+            rec.prepare()
+
+            // Swap surface to recorder
+            display.surface = rec.surface
+            rec.start()
+
+            recorder = rec
+            recording = true
+
+            Log.i(TAG, "recording started ${width}x$height ${durationSec}s")
+
+            // Auto-stop
+            handler?.postDelayed({
+                try { stopRecording() } catch (_: Exception) {}
+            }, durationSec.coerceIn(5, 180) * 1000L)
+
+            return JSONObject()
+                .put("ok", true)
+                .put("duration", durationSec)
+                .put("size", "${width}x$height")
+        } catch (e: Exception) {
+            Log.e(TAG, "start recording failed", e)
+            try { display.surface = r.surface } catch (_: Exception) {}
+            try { recorder?.release() } catch (_: Exception) {}
+            recorder = null
+            recording = false
+            return JSONObject().put("error", e.message ?: "record_start_failed")
+        }
+    }
+
+    /**
+     * Stop recording, restore surface to ImageReader, return the file.
+     */
+    fun stopRecording(): JSONObject {
+        if (!recording) {
+            return JSONObject().put("error", "not_recording")
+        }
+        try {
+            try { recorder?.stop() } catch (_: Exception) {}
+            try { recorder?.reset() } catch (_: Exception) {}
+            try { recorder?.release() } catch (_: Exception) {}
+            recorder = null
+
+            // Restore surface
+            val r = reader
+            val display = vd
+            if (r != null && display != null) {
+                try { display.surface = r.surface } catch (_: Exception) {}
+            }
+
+            recording = false
+
+            val f = recordingFile
+            if (f != null && f.exists()) {
+                return JSONObject()
+                    .put("ok", true)
+                    .put("path", f.absolutePath)
+                    .put("size", f.length())
+                    .put("filename", f.name)
+            }
+            return JSONObject().put("error", "no_file")
+        } catch (e: Exception) {
+            Log.e(TAG, "stop recording failed", e)
+            recording = false
+            return JSONObject().put("error", e.message ?: "stop_failed")
+        }
+    }
+
+    fun isRecording(): Boolean = recording
+    fun currentRecordingFile(): File? = recordingFile
+
     fun release() {
+        try { if (recording) stopRecording() } catch (_: Exception) {}
         try { reader?.setOnImageAvailableListener(null, null) } catch (_: Exception) {}
         try { reader?.close() } catch (_: Exception) {}
         reader = null
@@ -148,15 +257,10 @@ class ScreenCaptureSession(
 }
 
 
-/**
- * One-shot capture object, kept for API compatibility.
- * Prefer using ScreenCaptureSession for multiple captures.
- */
 object Screenshot {
     fun capture(ctx: Context, projection: MediaProjection): JSONObject {
         return try {
             val session = ScreenCaptureSession(ctx, projection)
-            // Give the pipeline a moment to deliver a frame
             Thread.sleep(400)
             val result = session.capture()
             session.release()
