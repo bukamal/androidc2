@@ -1,12 +1,38 @@
 /* Shared helpers: fetch, toasts, modal, formatting, activity feed. */
 
 const C2 = (() => {
+  function csrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute("content") : "";
+  }
+
   async function apiFetch(url, opts = {}) {
+    const method = (opts.method || "GET").toUpperCase();
     const headers = Object.assign(
       { "Content-Type": "application/json" },
       opts.headers || {},
     );
-    return fetch(url, { ...opts, headers });
+    if (method !== "GET" && method !== "HEAD") {
+      const token = csrfToken();
+      if (token) headers["X-CSRF-Token"] = token;
+    }
+
+    const r = await fetch(url, {
+      ...opts,
+      headers,
+      credentials: "same-origin",
+    });
+
+    if (r.status === 401) {
+      const next = encodeURIComponent(location.pathname + location.search);
+      location.replace("/login?next=" + next);
+      throw new Error("unauthorized");
+    }
+    if (r.status === 403) {
+      toast("request refused (csrf)", "error");
+      throw new Error("forbidden");
+    }
+    return r;
   }
 
   async function apiJson(url, opts = {}) {
@@ -113,7 +139,7 @@ const C2 = (() => {
   });
 
   return {
-    apiFetch, apiJson, toast,
+    apiFetch, apiJson, toast, csrfToken,
     activity, clearActivity,
     openModal, closeModal,
     escapeHtml, fmtBytes, fmtRelative, batteryClass,

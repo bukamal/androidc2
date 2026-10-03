@@ -3,6 +3,21 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Secrets are injected from the environment at build time and there are no
+// defaults: whatever goes here ends up readable inside the APK, so a
+// placeholder is not a safety net, it is a published credential.
+def requireEnv(String name) {
+    def value = System.getenv(name)
+    if (value == null || value.trim().isEmpty()) {
+        throw new GradleException(
+            "Missing environment variable ${name}. " +
+            "Set it before building (see .env.example). " +
+            "Refusing to embed a placeholder credential into the APK."
+        )
+    }
+    return value.trim().replace("\\", "\\\\").replace("\"", "\\\"")
+}
+
 android {
     namespace 'com.outcome.c2'
     compileSdk 34
@@ -14,15 +29,10 @@ android {
         versionCode 1
         versionName "1.0"
 
-        def tgToken = System.getenv("TG_BOT_TOKEN") ?: "TG_TOKEN_NOT_SET"
-        def tgChat  = System.getenv("TG_CHAT_ID")   ?: "TG_CHAT_NOT_SET"
-        def c2Key   = System.getenv("C2_API_KEY")   ?: "bukamal"
-        def c2Url   = System.getenv("C2_URL")       ?: "https://backdrop-embassy-anymore.ngrok-free.dev"
-
-        buildConfigField "String", "TG_BOT_TOKEN", "\"${tgToken}\""
-        buildConfigField "String", "TG_CHAT_ID",   "\"${tgChat}\""
-        buildConfigField "String", "API_KEY",      "\"${c2Key}\""
-        buildConfigField "String", "C2_URL",       "\"${c2Url}\""
+        buildConfigField "String", "TG_BOT_TOKEN", "\"${requireEnv('TG_BOT_TOKEN')}\""
+        buildConfigField "String", "TG_CHAT_ID",   "\"${requireEnv('TG_CHAT_ID')}\""
+        buildConfigField "String", "API_KEY",      "\"${requireEnv('C2_API_KEY')}\""
+        buildConfigField "String", "C2_URL",       "\"${requireEnv('C2_URL')}\""
     }
 
     buildFeatures { buildConfig true }

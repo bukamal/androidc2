@@ -42,12 +42,22 @@
 
   // ═══════════ SOCKET ═══════════
   function connectSocket() {
+    // Same-origin: the session cookie rides along automatically, which is
+    // what the server checks before accepting the /dashboard namespace.
     const socket = io("/dashboard");
     state.socket = socket;
 
     socket.on("connect", () => {
       C2.activity("🔌", "socket connected", "success");
       socket.emit("subscribe_global");
+    });
+    socket.on("connect_error", err => {
+      const reason = (err && err.message) || "unknown";
+      if (/login required|unauthorized/i.test(reason)) {
+        location.replace("/login?next=" + encodeURIComponent(location.pathname));
+        return;
+      }
+      C2.activity("⚠️", `socket refused: ${reason}`, "warn");
     });
     socket.on("disconnect", () => {
       C2.activity("⚠️", "socket disconnected", "warn");
@@ -86,6 +96,17 @@
       if (state.current && entry.device_id === state.current.id) {
         appendLog(entry);
       }
+    });
+    socket.on("device_removed", payload => {
+      state.devices = state.devices.filter(d => d.id !== payload.id);
+      if (state.current && state.current.id === payload.id) {
+        state.current = null;
+        $("#device-panel")?.classList.add("hidden");
+      }
+      renderDeviceList();
+      renderStats();
+      GlobeViz.setDevices(state.devices);
+      C2.activity("🗑️", "device removed", "warn");
     });
   }
 
@@ -651,6 +672,14 @@
       state.soundOn = !state.soundOn;
       soundToggle.classList.toggle("active", state.soundOn);
       C2.toast(`sound: ${state.soundOn ? "on" : "off"}`, "info");
+    });
+
+    const logoutBtn = $("#btn-logout");
+    if (logoutBtn) logoutBtn.addEventListener("click", async () => {
+      try {
+        await C2.apiFetch("/logout", { method: "POST" });
+      } catch (_) { /* navigating away anyway */ }
+      location.replace("/login");
     });
 
     // keyboard shortcuts

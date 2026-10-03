@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
 .venv/
 venv/
 env/
@@ -9,6 +10,9 @@ env/
 # Database + uploads
 c2.db
 c2.db-journal
+c2.db-wal
+c2.db-shm
+data/
 static/uploads/
 !static/uploads/.gitkeep
 !static/uploads/to_agent/.gitkeep
@@ -16,7 +20,9 @@ static/uploads/
 # Env / secrets
 .env
 .env.*
+!.env.example
 local.properties
+*.secret
 *.log
 
 # Gradle / Android
