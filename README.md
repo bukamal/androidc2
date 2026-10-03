@@ -86,7 +86,6 @@ git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar
 
 ```bash
 export C2_BASE=http://127.0.0.1:5000
-export C2_OPERATOR_PASSWORD=...      # same as the server
 python3 telegram_bridge.py
 ```
 
@@ -95,6 +94,16 @@ token), not as an agent, and re-authenticates automatically if the session
 drops. All device-supplied text is escaped before it reaches Telegram's
 Markdown parser — otherwise a model name containing `_` breaks the whole
 menu with *can't parse entities*.
+
+The operator password resolves in the same order as the server's: the
+`C2_OPERATOR_PASSWORD` environment variable, then
+`data/c2_operator_password.secret`. Both processes run as the same user on
+the same box, so the bridge reads the generated file rather than demanding a
+second copy of the value. Point it elsewhere with `C2_OPERATOR_PASSWORD_FILE`,
+or override the data directory with `C2_DATA_DIR`.
+
+**If the server is already running with a generated password and you export a
+different one, the bridge will 401** — the two must agree.
 
 ## Tests
 

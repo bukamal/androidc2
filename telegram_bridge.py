@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -168,7 +169,42 @@ async def send_document(filename, data_bytes, caption="", keyboard=None,
 # ═══════════════════════════════════════════════════════
 # The operator API is session-authenticated: log in once, keep the cookie
 # (httpx does that automatically) and echo back the CSRF token on mutations.
-C2_PASSWORD = os.environ.get("C2_OPERATOR_PASSWORD", "")
+#
+# Password resolution, in order:
+#   1. C2_OPERATOR_PASSWORD
+#   2. C2_OPERATOR_PASSWORD_FILE
+#   3. <C2_DATA_DIR>/c2_operator_password.secret  (created by the server)
+#
+# Read-only on purpose. The bridge must never *generate* a password: if it
+# did, and it happened to start before the server, the two would disagree and
+# every operator call would 401 with nothing pointing at the cause. If
+# nothing is found, say so and let the server be started first.
+def _resolve_operator_password():
+    explicit = os.environ.get("C2_OPERATOR_PASSWORD")
+    if explicit:
+        return explicit.strip()
+
+    root = Path(__file__).resolve().parent
+    data_dir = Path(os.environ.get("C2_DATA_DIR") or (root / "data"))
+
+    candidates = []
+    named = os.environ.get("C2_OPERATOR_PASSWORD_FILE")
+    if named:
+        candidates.append(Path(named))
+    candidates.append(data_dir / "c2_operator_password.secret")
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                stored = path.read_text(encoding="utf-8").strip()
+                if stored:
+                    return stored
+        except OSError:
+            continue
+    return ""
+
+
+C2_PASSWORD = _resolve_operator_password()
 _c2_session_ok = False
 _c2_csrf = ""
 
@@ -186,7 +222,10 @@ async def c2_login(force: bool = False) -> bool:
     if _c2_session_ok and not force:
         return True
     if not C2_PASSWORD:
-        print("[c2] C2_OPERATOR_PASSWORD is not set — operator API will 401")
+        print("[c2] no operator password found — operator API will 401")
+        print("[c2]   set it:  export C2_OPERATOR_PASSWORD=...")
+        print("[c2]   or read: cat data/c2_operator_password.secret")
+        print("[c2]   (the server must be started with the same value)")
         return False
 
     try:

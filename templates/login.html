@@ -107,8 +107,9 @@
     <button type="submit">authenticate</button>
 
     <p class="login-hint">
-      Set <code>C2_OPERATOR_PASSWORD</code> in the environment to choose your own.
-      Otherwise one is generated on first run and printed by the server banner.
+      Password comes from <code>C2_OPERATOR_PASSWORD</code>, or from the file
+      the server generated on first run:<br>
+      <code>cat data/c2_operator_password.secret</code>
     </p>
   </form>
 
