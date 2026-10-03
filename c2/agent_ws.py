@@ -14,9 +14,10 @@ though it holds the shared key.
 from __future__ import annotations
 
 import json
+import time
 
 from flask import request
-from flask_socketio import ConnectionRefusedError, disconnect, emit, join_room
+from flask_socketio import disconnect, emit, join_room
 
 from c2.auth import agent_key_ok
 from c2.timeutil import utcnow
@@ -59,13 +60,20 @@ def register_agent_ws():
         device_id = a.get("device_id") or ""
 
         if not agent_key_ok(key) or not device_id:
-            # Refuse the upgrade outright when the client can authenticate in
-            # the handshake. Clients that cannot stay connected but
-            # unauthenticated and must send `hello`.
             if device_id:
-                print("[agent] rejected: bad key or missing device_id", flush=True)
-                raise ConnectionRefusedError("unauthorized")
+                # Explicit, clean refusal: the client receives
+                # 44/agent,{"message":"Connection rejected by server"}.
+                # Do not raise here — Flask-SocketIO turns a raise into the
+                # same refusal but with a noisier failure path.
+                print("[agent] rejected handshake: bad key or missing device_id",
+                      flush=True)
+                return False
+
+            # No device_id in the handshake: this client authenticates later
+            # via `hello`. Accept it, but do not let it linger forever if
+            # `hello` never arrives.
             print("[agent] anonymous connect, awaiting hello", flush=True)
+            _kick_if_unbound(60.0)
             return True
 
         _bind(device_id, a)
@@ -185,6 +193,27 @@ def register_agent_ws():
                 db.session.commit()
                 _emit_device(dev)
             print(f"[agent] disconnected {device_id}", flush=True)
+
+
+def _kick_if_unbound(delay: float = 10.0) -> None:
+    """Close a socket that never authenticated.
+
+    An anonymous socket is accepted so it can send `hello`. Without this it
+    would sit there holding resources until the client gives up. No-op if the
+    socket authenticated in the meantime.
+    """
+    sid = request.sid
+
+    def later():
+        time.sleep(delay)
+        if sid in _sid_devices:
+            return
+        try:
+            disconnect(sid)
+        except Exception:
+            pass
+
+    socketio.start_background_task(later)
 
 
 def _bind(device_id: str, meta: dict) -> None:

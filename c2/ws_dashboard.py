@@ -6,7 +6,7 @@ any web page the operator happens to visit could open a socket to
 ``ws://127.0.0.1:5000`` and read every device, file and command live.
 """
 
-from flask_socketio import ConnectionRefusedError, SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from c2.auth import is_authenticated
 
@@ -45,7 +45,10 @@ def broadcast_to_device(dev_id: int, event: str, data) -> None:
 @socketio.on("connect", namespace="/dashboard")
 def on_connect(auth=None):
     if not is_authenticated():
-        raise ConnectionRefusedError("operator login required")
+        # Return False rather than raising ConnectionRefusedError: raising
+        # from a connect handler breaks the Werkzeug WSGI response cycle
+        # ("write() before start_response") and surfaces as a 500.
+        return False
     join_room("operators")
     join_room("all_devices")
     emit("connected", {"ok": True})
@@ -54,7 +57,7 @@ def on_connect(auth=None):
 @socketio.on("subscribe", namespace="/dashboard")
 def on_subscribe(data=None):
     if not is_authenticated():
-        raise ConnectionRefusedError("operator login required")
+        return
     device_id = (data or {}).get("device_id")
     if device_id is not None:
         join_room(f"device_{device_id}")
@@ -73,6 +76,6 @@ def on_unsubscribe(data=None):
 @socketio.on("subscribe_global", namespace="/dashboard")
 def on_subscribe_global(_data=None):
     if not is_authenticated():
-        raise ConnectionRefusedError("operator login required")
+        return
     join_room("all_devices")
     emit("subscribed_global", {"ok": True})
