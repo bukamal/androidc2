@@ -1,4 +1,4 @@
-/* Interactive shell terminal. */
+/* Interactive shell terminal for a selected device. */
 
 const Terminal = (() => {
   let out, input, sendBtn;
@@ -11,6 +11,7 @@ const Terminal = (() => {
     input = document.getElementById("terminal-cmd");
     sendBtn = document.getElementById("terminal-send");
     if (!out || !input || !sendBtn) return;
+
     sendBtn.addEventListener("click", submit);
     input.addEventListener("keydown", e => {
       if (e.key === "Enter") submit();

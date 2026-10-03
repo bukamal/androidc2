@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AndroidC2 — Command Center</title>
+<title>NanoRAT — Command Center</title>
 <link rel="stylesheet" href="/static/css/dashboard.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
@@ -12,123 +12,184 @@
 <body>
 
 <div id="app">
-  <aside id="sidebar">
-    <header class="brand">
+
+  <!-- ═══════════════ TOPBAR ═══════════════ -->
+  <header id="topbar">
+    <div class="brand">
       <div class="logo"></div>
       <div>
-        <h1>ANDROIDC2</h1>
-        <span class="tag">control plane</span>
+        <h1>NanoRAT</h1>
+        <span class="tag">command center</span>
       </div>
-    </header>
-
-    <div class="stat-grid">
-      <div class="stat"><span id="stat-online">0</span><label>online</label></div>
-      <div class="stat"><span id="stat-total">0</span><label>total</label></div>
-      <div class="stat"><span id="stat-cmds">0</span><label>in flight</label></div>
     </div>
 
-    <div class="search">
-      <input id="device-search" placeholder="search device / ip / model">
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input id="global-search" placeholder="search device / ip / tag / model…" autocomplete="off">
     </div>
 
-    <ul id="device-list"></ul>
-  </aside>
+    <div class="topbar-stats" id="topbar-stats">
+      <div class="tstat"><span id="stat-online">0</span><label>online</label></div>
+      <div class="tstat"><span id="stat-total">0</span><label>total</label></div>
+      <div class="tstat"><span id="stat-cmds">0</span><label>cmds</label></div>
+      <div class="tstat"><span id="stat-files">0</span><label>files</label></div>
+    </div>
 
+    <div class="topbar-actions">
+      <button id="btn-view-toggle" title="Toggle view">▤</button>
+      <button id="btn-sound" title="Toggle sound">🔔</button>
+    </div>
+  </header>
+
+  <!-- ═══════════════ MAIN GRID ═══════════════ -->
   <main id="main">
+
+    <!-- SIDEBAR -->
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <h2>Devices</h2>
+        <span class="muted" id="sidebar-count">0</span>
+      </div>
+
+      <div class="filter-row">
+        <button class="filter-chip active" data-filter="all">All</button>
+        <button class="filter-chip" data-filter="online">🟢</button>
+        <button class="filter-chip" data-filter="offline">⚪</button>
+        <button class="filter-chip" data-filter="ws">🔌</button>
+      </div>
+
+      <ul id="device-list"></ul>
+    </aside>
+
+    <!-- GLOBE -->
     <section id="globe-wrap">
       <div id="globe"></div>
       <div id="globe-overlay">
-        <div class="globe-corner tl">LIVE FEED</div>
+        <div class="globe-corner tl">
+          <div class="dot"></div>
+          <span>LIVE FEED</span>
+        </div>
         <div class="globe-corner tr" id="globe-clock">--:--:--</div>
       </div>
     </section>
 
-    <section id="device-panel" class="hidden">
-      <header class="panel-head">
-        <div class="panel-head-left">
+    <!-- ACTIVITY PANEL -->
+    <aside id="activity-panel">
+      <div class="sidebar-head">
+        <h2>Activity</h2>
+        <button id="btn-clear-activity" title="clear">✕</button>
+      </div>
+      <div id="activity-feed"></div>
+
+      <div class="sidebar-head" style="margin-top:16px">
+        <h2>Queue</h2>
+      </div>
+      <div id="queue-feed"></div>
+    </aside>
+
+  </main>
+
+  <!-- ═══════════════ DEVICE PANEL (slide-out) ═══════════════ -->
+  <section id="device-panel" class="hidden">
+    <header class="panel-head">
+      <div class="panel-head-left">
+        <div class="panel-title-row">
           <h2 id="dev-title">—</h2>
-          <div class="meta">
-            <span id="dev-ip" class="chip"></span>
-            <span id="dev-model" class="chip"></span>
-            <span id="dev-android" class="chip"></span>
-            <span id="dev-battery" class="chip"></span>
-            <span id="dev-admin" class="chip admin">root</span>
-          </div>
-          <div id="dev-tags" class="tag-row"></div>
+          <span id="dev-ws-badge" class="ws-badge">—</span>
         </div>
-        <button id="dev-close">✕</button>
-      </header>
-
-      <nav class="tabs">
-        <button data-tab="commands" class="active">أوامر</button>
-        <button data-tab="terminal">طرفية</button>
-        <button data-tab="files">ملفات</button>
-        <button data-tab="mirror">بث الشاشة</button>
-        <button data-tab="logs">سجلات</button>
-        <button data-tab="notes">ملاحظات</button>
-      </nav>
-
-      <div class="tab-body">
-        <div data-panel="commands" class="tab-panel active">
-          <div id="command-catalog"></div>
+        <div class="meta">
+          <span id="dev-ip" class="chip"></span>
+          <span id="dev-model" class="chip"></span>
+          <span id="dev-android" class="chip"></span>
+          <span id="dev-battery" class="chip"></span>
+          <span id="dev-admin" class="chip admin">root</span>
         </div>
+        <div id="dev-tags" class="tag-row"></div>
+      </div>
+      <button id="dev-close" class="close-x">✕</button>
+    </header>
 
-        <div data-panel="terminal" class="tab-panel">
-          <div id="terminal-out"></div>
-          <div class="term-input">
-            <span class="prompt">$</span>
-            <input id="terminal-cmd" placeholder="shell command…" autocomplete="off">
-            <button id="terminal-send">إرسال</button>
-          </div>
+    <nav class="tabs">
+      <button data-tab="overview" class="active">نظرة</button>
+      <button data-tab="commands">أوامر</button>
+      <button data-tab="terminal">طرفية</button>
+      <button data-tab="files">ملفات</button>
+      <button data-tab="mirror">بث الشاشة</button>
+      <button data-tab="logs">سجلات</button>
+      <button data-tab="notes">ملاحظات</button>
+    </nav>
+
+    <div class="tab-body">
+
+      <div data-panel="overview" class="tab-panel active">
+        <div id="overview-grid"></div>
+      </div>
+
+      <div data-panel="commands" class="tab-panel">
+        <div class="cmd-search">
+          <input id="cmd-filter" placeholder="filter commands…" autocomplete="off">
         </div>
+        <div id="command-catalog"></div>
+      </div>
 
-        <div data-panel="files" class="tab-panel">
-          <div class="files-toolbar">
-            <select id="file-filter">
-              <option value="">all categories</option>
-              <option value="screenshot">screenshots</option>
-              <option value="camera">camera</option>
-              <option value="mic">microphone</option>
-              <option value="exfil">exfiltrated</option>
-              <option value="misc">misc</option>
-            </select>
-            <span id="file-count" class="muted-text">0 files</span>
-          </div>
-          <div id="file-grid"></div>
-        </div>
-
-        <div data-panel="mirror" class="tab-panel">
-          <div class="mirror-toolbar">
-            <button id="mirror-refresh">refresh once</button>
-            <button id="mirror-stream-toggle">start live</button>
-            <span id="mirror-fps" class="muted-text">idle</span>
-          </div>
-          <div id="mirror-stage">
-            <img id="mirror-img" alt="no screenshot yet">
-          </div>
-        </div>
-
-        <div data-panel="logs" class="tab-panel">
-          <div id="log-stream"></div>
-        </div>
-
-        <div data-panel="notes" class="tab-panel">
-          <textarea id="notes-area" placeholder="ملاحظات المشغّل…"></textarea>
-          <div class="notes-actions">
-            <button id="notes-save">حفظ</button>
-            <input id="tag-input" placeholder="add tag, comma separated">
-            <button id="tags-save">حفظ الوسوم</button>
-          </div>
+      <div data-panel="terminal" class="tab-panel">
+        <div id="terminal-out"></div>
+        <div class="term-input">
+          <span class="prompt">$</span>
+          <input id="terminal-cmd" placeholder="shell command…" autocomplete="off">
+          <button id="terminal-send">إرسال</button>
         </div>
       </div>
-    </section>
 
-    <section id="welcome" class="hero">
-      <div class="hero-title">COMMAND CENTER</div>
-      <div class="hero-sub">select a device to begin operations</div>
-      <div class="pulse"></div>
-    </section>
-  </main>
+      <div data-panel="files" class="tab-panel">
+        <div class="files-toolbar">
+          <select id="file-filter">
+            <option value="">all categories</option>
+            <option value="screenshot">screenshots</option>
+            <option value="camera">camera</option>
+            <option value="mic">microphone</option>
+            <option value="exfil">exfiltrated</option>
+            <option value="misc">misc</option>
+          </select>
+          <span id="file-count" class="muted-text">0 files</span>
+        </div>
+        <div id="file-grid"></div>
+      </div>
+
+      <div data-panel="mirror" class="tab-panel">
+        <div class="mirror-toolbar">
+          <button id="mirror-refresh">refresh once</button>
+          <button id="mirror-stream-toggle">start live</button>
+          <span id="mirror-fps" class="muted-text">idle</span>
+        </div>
+        <div id="mirror-stage">
+          <img id="mirror-img" alt="no screenshot yet">
+        </div>
+      </div>
+
+      <div data-panel="logs" class="tab-panel">
+        <div id="log-stream"></div>
+      </div>
+
+      <div data-panel="notes" class="tab-panel">
+        <textarea id="notes-area" placeholder="ملاحظات المشغّل…"></textarea>
+        <div class="notes-actions">
+          <button id="notes-save">حفظ</button>
+          <input id="tag-input" placeholder="add tag, comma separated">
+          <button id="tags-save">حفظ الوسوم</button>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ WELCOME ═══════════════ -->
+  <section id="welcome" class="hero">
+    <div class="hero-title">NANORAT</div>
+    <div class="hero-sub">select a device to begin operations</div>
+    <div class="pulse"></div>
+  </section>
+
 </div>
 
 <div id="modal-wrap" class="hidden">
@@ -138,9 +199,9 @@
 
 <div id="toast-stack"></div>
 
+<script src="/static/js/panel.js"></script>
 <script src="/static/js/globe.js"></script>
 <script src="/static/js/terminal.js"></script>
-<script src="/static/js/panel.js"></script>
 <script src="/static/js/dashboard.js"></script>
 </body>
 </html>
