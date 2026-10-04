@@ -3,18 +3,22 @@
 Run:
     gunicorn -c deploy/gunicorn.conf.py 'app:create_app()'
 
-Why gevent-geventwebsocket instead of the Flask dev server:
+Why gthread + threads instead of the Flask dev server:
 
 * The Werkzeug dev server logs a spurious
   ``AssertionError: write() before start_response`` for *every* WebSocket
   that closes. ``simple-websocket`` takes over the raw socket, then Werkzeug
   finalises a response cycle that never started. Purely cosmetic — but it
   fills the log with 500s that look like a broken tunnel.
-* One worker with cooperative concurrency. Do **not** scale workers with
-  ``-w N``: the connected-agent registry lives in process memory
-  (``c2/agent_ws._agents``), so a second worker would not see devices held by
-  the first. Moving that registry to Redis is the prerequisite for scaling
-  out — see README "Scaling past one process".
+* Threads, not gevent. gevent ships no cp313 wheels, so installing it falls
+  back to a source build whose bundled Cython fails on
+  ``undeclared name not builtin: long``. ``simple-websocket`` (already
+  required above) gives WebSocket support on plain threads.
+
+One worker, many threads. Do **not** scale workers with ``-w N``: the
+connected-agent registry lives in process memory (``c2/agent_ws._agents``),
+so a second worker would not see devices held by the first. Moving that
+registry to Redis is the prerequisite for scaling out — see README.
 """
 
 import multiprocessing
@@ -22,10 +26,11 @@ import os
 
 bind = os.environ.get("C2_BIND", "127.0.0.1:5000")
 
-# Single worker: see module docstring. Cooperative gevent handles many
-# concurrent WebSockets inside one process.
+# Single worker, many threads: see module docstring. Threads give concurrent
+# WebSocket handling without a compiled dependency.
 workers = 1
-worker_class = "geventwebsocket.gunicorn.workers.GeventWebSocketWorker"
+worker_class = "gthread"
+threads = int(os.environ.get("C2_THREADS", "100"))
 
 # Keep the connection alive well past any tunnel/NAT idle timeout.
 timeout = 120
@@ -49,8 +54,8 @@ preload_app = False       # Config reads env at import; do not fork-share it
 
 
 def when_ready(server):
-    server.log.info("androidc2 ready on %s (worker_class=%s)",
-                    bind, worker_class)
+    server.log.info("androidc2 ready on %s (workers=%d threads=%d)",
+                    bind, workers, threads)
 
 
 def worker_int(prev_pid, prev_worker):

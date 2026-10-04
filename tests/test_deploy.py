@@ -54,8 +54,33 @@ def test_gunicorn_uses_single_worker():
     src = (DEPLOY / "gunicorn.conf.py").read_text()
     assert re.search(r"^workers\s*=\s*1\s*$", src, re.M), \
         "workers must stay 1 until the registry moves to Redis"
-    assert re.search(r'worker_class\s*=\s*"geventwebsocket', src), \
-        "must use the WebSocket-capable worker"
+
+
+def test_gunicorn_avoids_gevent():
+    """gevent has no cp313 wheels and its source build fails on modern
+    Cython, so it must not appear in requirements or the worker class."""
+    src = (DEPLOY / "gunicorn.conf.py").read_text()
+    assert not re.search(r'worker_class\s*=\s*"gevent', src), \
+        "gevent worker needs a compiled dependency; use gthread"
+
+    reqs = (DEPLOY.parent / "requirements.txt").read_text()
+    for banned in ("gevent", "gevent-websocket"):
+        assert not re.search(rf"^{re.escape(banned)}==", reqs, re.M), \
+            f"{banned} must not be pinned: no cp313 wheel, source build fails"
+
+
+def test_gunicorn_uses_threaded_worker():
+    src = (DEPLOY / "gunicorn.conf.py").read_text()
+    assert re.search(r'worker_class\s*=\s*"gthread"', src)
+    assert re.search(r"^threads\s*=", src, re.M), \
+        "threads are what allow concurrent WebSockets without gevent"
+
+
+def test_simple_websocket_is_pinned():
+    """The gthread worker gets WebSocket support from simple-websocket only."""
+    reqs = (DEPLOY.parent / "requirements.txt").read_text()
+    assert re.search(r"^simple-websocket==", reqs, re.M), \
+        "simple-websocket is what makes WebSocket work on plain threads"
 
 
 def test_gunicorn_binds_loopback_by_default():
@@ -166,9 +191,6 @@ def test_app_factory_is_a_valid_wsgi_callable():
 
 
 def test_gunicorn_worker_class_is_importable_when_installed():
-    """Skip when gunicorn/gevent are absent — the requirement is what
-    matters, and CI installs it."""
-    pytest.importorskip("geventwebsocket.gunicorn.workers")
-    worker = pytest.importorskip(
-        "geventwebsocket.gunicorn.workers").GeventWebSocketWorker
-    assert worker is not None
+    """Skip when gunicorn is absent — the requirement is what matters."""
+    gunicorn = pytest.importorskip("gunicorn.workers.gthread")
+    assert gunicorn.ThreadWorker is not None

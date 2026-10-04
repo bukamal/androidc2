@@ -22,9 +22,12 @@ alembic==1.13.2
 # development server logs a spurious "write() before start_response" 500 for
 # every WebSocket that closes, and it offers no TLS, no restart supervision
 # and no access log rotation.
+#
+# Deliberately no gevent / gevent-websocket. gevent has no cp313 wheels, so pip
+# falls back to a source build whose bundled Cython cannot compile it
+# ("undeclared name not builtin: long"). The gthread worker plus
+# simple-websocket above handles WebSocket fine and installs from a wheel.
 gunicorn==23.0.0
-gevent==24.2.1
-gevent-websocket==0.10.1
 
 # Test
 pytest==8.3.3

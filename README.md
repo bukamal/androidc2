@@ -105,6 +105,60 @@ or override the data directory with `C2_DATA_DIR`.
 **If the server is already running with a generated password and you export a
 different one, the bridge will 401** — the two must agree.
 
+## Production deployment
+
+Two systemd units: gunicorn behind Caddy. Caddy terminates TLS, gunicorn
+serves the app on loopback.
+
+```bash
+TLS_HOST=panel.example.com sudo -E ./deploy/install.sh
+```
+
+The installer creates a system user, a venv, `/etc/androidc2/env` (mode 0600)
+and enables both services. It **reuses** the key already in
+`data/c2_api_key.secret` rather than generating a new one, so redeploying does
+not silently invalidate every built APK.
+
+| Command | What it does |
+|---|---|
+| `journalctl -u androidc2 -f` | application log |
+| `systemctl reload androidc2` | graceful reload (HUP) |
+| `sudo cat /etc/androidc2/env` | the live secrets |
+
+Then point the agent and bridge at it:
+
+```
+C2_URL=https://panel.example.com    # agent build
+C2_BASE=https://panel.example.com   # telegram bridge
+```
+
+### Why not the Flask dev server
+
+The Werkzeug development server logs a spurious
+`AssertionError: write() before start_response` for **every** WebSocket that
+closes: `simple-websocket` takes over the raw socket, then Werkzeug finalises a
+response cycle that never began. It is cosmetic — but it fills the log with
+500s that read like a broken tunnel.
+
+### Why not gevent
+
+`gevent` ships no `cp313` wheels, so pip falls back to a source build whose
+bundled Cython cannot compile it (`undeclared name not builtin: long`).
+`simple-websocket` gives WebSocket support on plain threads, so the config uses
+the `gthread` worker:
+
+```
+workers = 1     # see below
+threads = 100
+```
+
+### Scaling past one process
+
+**Do not raise `workers`.** The connected-agent registry
+(`c2/agent_ws._agents`) lives in process memory, so a second worker would not
+see devices held by the first. Scaling out needs that registry — and the
+Socket.IO message queue — in Redis first.
+
 ## Tests
 
 ```bash
