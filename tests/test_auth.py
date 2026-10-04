@@ -123,3 +123,36 @@ def test_login_next_is_honoured_for_local_paths(client, make_device):
 
 def _csrf(client):
     return client.get("/api/session").get_json()["csrf_token"]
+
+# ----------------------------------------------------------- fingerprints
+
+def test_fingerprint_is_stable_and_non_reversible():
+    from c2.auth import key_fingerprint
+
+    a = key_fingerprint("super-secret-value")
+    b = key_fingerprint("super-secret-value")
+    c = key_fingerprint("super-secret-value-2")
+
+    assert a == b, "must be deterministic so two processes can compare"
+    assert a != c, "different keys must produce different tags"
+    assert len(a) == 8
+    assert "super-secret" not in a
+    assert "super-secret-value" != a
+
+
+def test_empty_key_has_a_distinct_fingerprint():
+    from c2.auth import key_fingerprint
+
+    assert key_fingerprint("") == "--------"
+    assert key_fingerprint(None) == "--------"
+    assert key_fingerprint("x") != "--------"
+
+
+def test_fingerprint_matches_a_known_digest():
+    import hashlib
+
+    from c2.auth import key_fingerprint
+
+    value = "test-agent-key"
+    assert key_fingerprint(value) == \
+        hashlib.sha256(value.encode()).hexdigest()[:8]

@@ -1,0 +1,65 @@
+# Caddy in front of gunicorn.
+#
+# Replaces `ngrok http 5000` for anything you control: real TLS, HTTP/2, and
+# no dependency on a tunnel process staying alive. Keep ngrok only if you
+# genuinely need an ephemeral host.
+#
+#   sudo caddy run --config deploy/Caddyfile
+#
+# Then set C2_URL (agent build) and C2_BASE (telegram bridge) to the hostname
+# below — https included, no trailing slash.
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+backdrop-embassy-anymore.ngrok-free.dev {
+	encode zstd gzip
+
+	# The panel is cookie-authenticated and carries CSRF tokens; nothing here
+	# should ever be cached by an intermediary.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "same-origin"
+		-Server
+		# Everything the dashboard loads is same-origin; three.js and
+		# globe.gl are still loaded from CDNs, so allow only those.
+		Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:"
+	}
+
+	# Login brute-force: the app throttles per IP in memory, this bounds it
+	# per source before the request ever reaches Python.
+	@login path /login
+	rate_limit @login {
+		zone login {
+			key    {remote_host}
+			events 10
+			window 1m
+		}
+	}
+
+	# Uploads and captures can be large; do not buffer them through Caddy.
+	request_body {
+		max_size 1GB
+	}
+
+	reverse_proxy 127.0.0.1:5000 {
+		# WebSocket upgrade. No timeout here — the app sends its own ping
+		# every 5s, and a proxy-level read timeout would cut long-lived
+		# idle agent sockets.
+		flush_interval -1
+	}
+
+	log {
+		output file /var/log/caddy/androidc2.log
+		format json
+	}
+}
+
+# Dashboard telemetry on a separate admin port, loopback only.
+127.0.0.1:2019 {
+	respond /health "ok" 200
+}

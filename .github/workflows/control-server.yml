@@ -28,7 +28,7 @@ jobs:
       # Compiling every module catches syntax errors in files the tests do
       # not import (telegram_bridge.py in particular).
       - name: Compile check
-        run: python -m compileall -q app.py config.py database.py models.py telegram_bridge.py c2
+        run: python -m compileall -q app.py config.py database.py models.py telegram_bridge.py c2 deploy
 
       - name: Run tests
         run: python -m pytest -v

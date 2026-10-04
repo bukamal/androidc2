@@ -18,5 +18,13 @@ requests==2.32.3
 Flask-Migrate==4.0.7
 alembic==1.13.2
 
+# Production server. Use instead of the Flask dev server: the Werkzeug
+# development server logs a spurious "write() before start_response" 500 for
+# every WebSocket that closes, and it offers no TLS, no restart supervision
+# and no access log rotation.
+gunicorn==23.0.0
+gevent==24.2.1
+gevent-websocket==0.10.1
+
 # Test
 pytest==8.3.3

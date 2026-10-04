@@ -12,6 +12,7 @@ Two separate trust domains:
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import secrets
 import threading
@@ -34,6 +35,19 @@ def agent_key_ok(candidate: str | None) -> bool:
     expected = (Config.API_KEY or "").encode("utf-8")
     given = str(candidate).encode("utf-8")
     return hmac.compare_digest(given, expected)
+
+
+def key_fingerprint(value: str | None) -> str:
+    """Short, non-reversible tag so two processes can compare keys safely.
+
+    Never log a key. When an agent refuses to connect the one question that
+    matters is "is the key in the APK the same as the key the server
+    expects", and two 8-character tags answer that without printing either
+    secret. ``--------`` means no key arrived at all.
+    """
+    if not value:
+        return "--------"
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:8]
 
 
 # --------------------------------------------------------------------------

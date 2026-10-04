@@ -1,0 +1,30 @@
+[Unit]
+Description=Caddy reverse proxy / TLS terminator for AndroidC2
+Documentation=https://caddyserver.com/docs/
+After=network-online.target androidc2.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+
+ExecStart=/usr/bin/caddy run --environ --config /opt/androidc2/deploy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /opt/androidc2/deploy/Caddyfile --force
+ExecStop=/usr/bin/caddy stop
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/caddy /var/log/caddy
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=caddy
+
+[Install]
+WantedBy=multi-user.target

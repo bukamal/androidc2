@@ -1,0 +1,53 @@
+[Unit]
+Description=AndroidC2 control server
+Documentation=https://github.com/you/androidc2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=androidc2
+Group=androidc2
+WorkingDirectory=/opt/androidc2
+
+# Secrets live in this file, mode 0600, owned by the service user.
+# It is NOT the same as C2_API_KEY for the agent — see EnvironmentFile below.
+EnvironmentFile=/etc/androidc2/env
+Environment=C2_BIND=127.0.0.1:5000
+Environment=C2_LOGLEVEL=info
+
+ExecStart=/opt/androidc2/.venv/bin/gunicorn -c deploy/gunicorn.conf.py 'app:create_app()'
+
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+
+# Give sockets time to drain on stop; the app closes them in the disconnect
+# handler.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+# ---- hardening ----
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# The only writable paths are the data dir and the upload tree.
+ReadWritePaths=/opt/androidc2/data
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=androidc2
+
+[Install]
+WantedBy=multi-user.target

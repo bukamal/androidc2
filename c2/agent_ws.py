@@ -19,9 +19,10 @@ import time
 from flask import request
 from flask_socketio import disconnect, emit, join_room
 
-from c2.auth import agent_key_ok
+from c2.auth import agent_key_ok, key_fingerprint
 from c2.timeutil import utcnow
 from c2.ws_dashboard import broadcast, socketio
+from config import Config
 from database import db
 from models import Command, Device
 
@@ -65,14 +66,19 @@ def register_agent_ws():
                 # 44/agent,{"message":"Connection rejected by server"}.
                 # Do not raise here — Flask-SocketIO turns a raise into the
                 # same refusal but with a noisier failure path.
-                print("[agent] rejected handshake: bad key or missing device_id",
-                      flush=True)
+                #
+                # The fingerprint answers "wrong key" vs "no key" without
+                # putting either secret in the log.
+                print(f"[agent] rejected: device={device_id[:8]} "
+                      f"got_key={key_fingerprint(key)} "
+                      f"want_key={key_fingerprint(Config.API_KEY)}", flush=True)
                 return False
 
             # No device_id in the handshake: this client authenticates later
             # via `hello`. Accept it, but do not let it linger forever if
             # `hello` never arrives.
-            print("[agent] anonymous connect, awaiting hello", flush=True)
+            print(f"[agent] anonymous connect, got_key="
+                  f"{key_fingerprint(key)} (awaiting hello)", flush=True)
             _kick_if_unbound(60.0)
             return True
 
@@ -85,6 +91,9 @@ def register_agent_ws():
     def on_agent_hello(data):
         a = data if isinstance(data, dict) else {}
         if not agent_key_ok(a.get("api_key")):
+            print(f"[agent] hello rejected: "
+                  f"got_key={key_fingerprint(a.get('api_key'))} "
+                  f"want_key={key_fingerprint(Config.API_KEY)}", flush=True)
             emit("reject", {"error": "unauthorized"})
             disconnect()
             return

@@ -30,6 +30,7 @@ from c2.auth import (
     csrf_protect,
     csrf_token,
     is_authenticated,
+    key_fingerprint,
     operator_required,
     record_failure,
     verify_password,
@@ -374,7 +375,9 @@ def _startup_banner():
     print(f" listening   http://{Config.C2_HOST}:{Config.C2_PORT}", flush=True)
     print(f" uploads     {Config.UPLOAD_FOLDER}", flush=True)
     print(f" database    {Config.SQLALCHEMY_DATABASE_URI}", flush=True)
-    print(f" api key     {Config.API_KEY[:6]}… ({len(Config.API_KEY)} chars)", flush=True)
+    print(f" api key     {key_fingerprint(Config.API_KEY)}  "
+          f"({len(Config.API_KEY)} chars, sha256/8)", flush=True)
+    print("             agents must be built with this exact value", flush=True)
     if from_env:
         print(" operator    password from C2_OPERATOR_PASSWORD", flush=True)
     else:
