@@ -62,6 +62,10 @@ class Config:
     API_KEY = _load_secret("C2_API_KEY")
 
     OPERATOR_PASSWORD = _operator_password()
+    # Display name recorded in the audit trail. Distinguishes operators only
+    # if you change it per person; a shared panel can only attribute to
+    # "operator" plus a session id.
+    OPERATOR_NAME = os.environ.get("C2_OPERATOR_NAME", "operator")
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     PERMANENT_SESSION_LIFETIME = 60 * 60 * 12  # 12h
@@ -87,6 +91,28 @@ class Config:
     MAX_CONTENT_LENGTH = int(
         os.environ.get("C2_MAX_UPLOAD_MB", "1024")
     ) * 1024 * 1024
+
+    # ── Access ──────────────────────────────────────────────────────────────
+    # "open"    — everything open. Safe only while bound to loopback.
+    #             This is the default, so `python3 app.py` just works.
+    # "token"   — loopback stays open; anything arriving from a non-loopback
+    #             address must present C2_ACCESS_TOKEN. Use this before
+    #             putting the panel behind a tunnel.
+    # "operator"— named operator accounts (see c2/operators.py).
+    AUTH_MODE = os.environ.get("C2_AUTH", "open").lower()
+
+    # Shared secret for AUTH_MODE="token". Reuses the same idea as
+    # C2_API_KEY: one value, set once, no login form.
+    ACCESS_TOKEN = os.environ.get("C2_ACCESS_TOKEN", "")
+
+    # Logging: "text" for a human, "json" for journald/Loki/ELK.
+    LOG_LEVEL = os.environ.get("C2_LOG_LEVEL", "info")
+    LOG_FORMAT = os.environ.get("C2_LOG_FORMAT", "text")
+    # Trust X-Request-ID from a reverse proxy you control (Caddy does not set
+    # it). Off by default so a client cannot spoof correlation ids.
+    TRUST_PROXY_REQUEST_ID = os.environ.get(
+        "C2_TRUST_PROXY_REQUEST_ID", ""
+    ).lower() in ("1", "true", "yes")
 
     AGENT_HEARTBEAT_TIMEOUT = int(os.environ.get("C2_HEARTBEAT_TIMEOUT", "60"))
     AGENT_REAPER_INTERVAL = int(os.environ.get("C2_REAPER_INTERVAL", "15"))

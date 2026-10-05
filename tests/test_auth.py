@@ -1,6 +1,6 @@
 """Operator authentication, session, CSRF and login throttling."""
 
-from conftest import OPERATOR_PASSWORD
+from conftest import OPERATOR_NAME, OPERATOR_PASSWORD
 
 
 def test_dashboard_redirects_anonymous(client):
@@ -39,9 +39,9 @@ def test_every_operator_api_route_is_guarded(client, make_device):
 
 
 def test_wrong_password_rejected(client):
-    r = client.post("/login", data={"password": "nope"})
+    r = client.post("/login", data={"name": OPERATOR_NAME, "password": "nope"})
     assert r.status_code == 401
-    assert b"wrong password" in r.data
+    assert b"invalid name or password" in r.data
 
 
 def test_login_then_access(op):
@@ -75,7 +75,7 @@ def test_mutation_with_csrf_succeeds(op, make_device):
 
 def test_csrf_token_rejected_when_wrong(client, make_device):
     dev_pk = make_device()
-    client.post("/login", data={"password": OPERATOR_PASSWORD})
+    client.post("/login", data={"name": OPERATOR_NAME, "password": OPERATOR_PASSWORD})
     client.environ_base["HTTP_X_CSRF_TOKEN"] = "forged-token"
     r = client.post(f"/api/device/{dev_pk}/notes", json={"notes": "x"})
     assert r.status_code == 403
@@ -83,9 +83,9 @@ def test_csrf_token_rejected_when_wrong(client, make_device):
 
 def test_login_throttle_blocks_after_repeated_failures(client):
     for _ in range(5):
-        client.post("/login", data={"password": "wrong"})
+        client.post("/login", data={"name": OPERATOR_NAME, "password": "wrong"})
 
-    r = client.post("/login", data={"password": OPERATOR_PASSWORD})
+    r = client.post("/login", data={"name": OPERATOR_NAME, "password": OPERATOR_PASSWORD})
     assert r.status_code == 429
 
 
@@ -98,6 +98,7 @@ def test_open_redirect_is_refused(client):
     """A hostile `next` must never become the post-login destination."""
     for evil in ("https://evil.example/steal", "//evil.example/steal"):
         client.post("/login", data={
+            "name": OPERATOR_NAME,
             "password": OPERATOR_PASSWORD,
             "next": evil,
         })
@@ -115,7 +116,7 @@ def test_open_redirect_is_refused(client):
 
 def test_login_next_is_honoured_for_local_paths(client, make_device):
     make_device("dev-x")
-    client.post("/login", data={"password": OPERATOR_PASSWORD,
+    client.post("/login", data={"name": OPERATOR_NAME, "password": OPERATOR_PASSWORD,
                                 "next": "/api/devices"})
     r = client.get("/")
     assert r.status_code == 200

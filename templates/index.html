@@ -128,6 +128,7 @@
       </div>
 
       <div data-panel="commands" class="tab-panel">
+        <div id="cmd-coverage" class="cmd-coverage unknown"></div>
         <div class="cmd-search">
           <input id="cmd-filter" placeholder="filter commands…" autocomplete="off">
         </div>
@@ -170,7 +171,11 @@
       </div>
 
       <div data-panel="logs" class="tab-panel">
-        <div id="log-stream"></div>
+        <div class="audit-head">
+          <span class="audit-title">operator actions</span>
+          <button id="audit-verify" title="Verify digest chain">verify chain</button>
+        </div>
+        <div id="audit-log"></div>
       </div>
 
       <div data-panel="notes" class="tab-panel">

@@ -13,6 +13,9 @@
     view: "list",
     soundOn: false,
     queue: [],
+    scopedCatalog: null,
+    coverage: null,
+    audit: [],
   };
 
   const $ = sel => document.querySelector(sel);
@@ -33,6 +36,54 @@
     setInterval(refreshDevices, 15000);
     setInterval(flushQueue, 3000);
     C2.activity("🚀", "dashboard started", "info");
+  }
+
+  // ═══════════ AUDIT ═══════════
+  async function loadAudit(limit = 60) {
+    const r = await C2.apiJson(`/api/audit?limit=${limit}`);
+    if (!r || !Array.isArray(r.entries)) return [];
+    state.audit = r.entries;
+    return r.entries;
+  }
+
+  function renderAudit() {
+    const host = $("#audit-log");
+    if (!host) return;
+    const rows = state.audit || [];
+    if (!rows.length) {
+      host.innerHTML = `<p class="muted-text">لا يوجد سجل بعد.</p>`;
+      return;
+    }
+    host.innerHTML = rows.map(e => {
+      const bad = e.outcome !== "ok";
+      const target = e.device_id
+        ? `<span class="a-dev">${C2.escapeHtml(e.device_id.slice(0, 8))}</span>`
+        : "";
+      const what = e.command_type
+        ? `<code>${C2.escapeHtml(e.command_type)}</code>`
+        : `<code>${C2.escapeHtml(e.action)}</code>`;
+      return `
+        <div class="audit-row${bad ? " denied" : ""}">
+          <span class="a-at">${C2.fmtRelative(e.at)}</span>
+          ${target}
+          <span class="a-what">${what}</span>
+          <span class="a-actor">${C2.escapeHtml(e.actor)}</span>
+          <span class="a-out">${bad ? C2.escapeHtml(e.outcome) : ""}</span>
+        </div>`;
+    }).join("");
+  }
+
+  async function verifyAuditChain() {
+    try {
+      const r = await C2.apiJson("/api/audit/verify");
+      if (r && r.ok) {
+        C2.toast(`سلسلة السجل سليمة (${r.checked})`, "success");
+      } else {
+        C2.toast(`كسر بالسجل عند #${r.broken_at}`, "error");
+      }
+    } catch (_) {
+      C2.toast("فشل التحقق", "error");
+    }
   }
 
   function tickClock() {
@@ -114,6 +165,28 @@
   async function loadCatalog() {
     state.catalog = await C2.apiJson("/api/catalog");
     renderCatalog();
+  }
+
+  // Re-fetch the catalogue for the selected device so the command palette
+  // only offers what that build actually implements. Devices that never
+  // declared their capabilities get the full catalogue back.
+  async function refreshCatalogForDevice() {
+    if (!state.current) return;
+    const devId = state.current.id;
+    try {
+      const scoped = await C2.apiJson(`/api/catalog?device_id=${devId}`);
+      if (!state.current || state.current.id !== devId) return;
+      state.scopedCatalog = scoped.commands || {};
+      state.coverage = scoped.coverage || null;
+    } catch (_) {
+      state.scopedCatalog = null;
+      state.coverage = null;
+    }
+    renderCatalog();
+  }
+
+  function catalogForCurrentDevice() {
+    return state.scopedCatalog || state.catalog;
   }
 
   async function refreshDevices() {
@@ -227,12 +300,14 @@
 
   // ═══════════ RENDER CATALOG ═══════════
   function renderCatalog() {
+    const catalog = catalogForCurrentDevice();
+    renderCoverageBadge();
     const wrap = $("#command-catalog");
     if (!wrap) return;
     const q = ($("#cmd-filter")?.value || "").toLowerCase();
 
     wrap.innerHTML = "";
-    Object.entries(state.catalog)
+    Object.entries(catalog)
       .filter(([type, info]) => {
         if (!q) return true;
         return type.toLowerCase().includes(q) ||
@@ -251,6 +326,26 @@
         card.addEventListener("click", () => promptCommand(type, info));
         wrap.appendChild(card);
       });
+  }
+
+  function renderCoverageBadge() {
+    const host = $("#cmd-coverage");
+    if (!host) return;
+    const cov = state.coverage;
+    if (!cov) {
+      host.innerHTML = `<span class="muted-text">capabilities not declared — showing full catalogue</span>`;
+      host.className = "cmd-coverage unknown";
+      return;
+    }
+    const pct = cov.total ? Math.round((cov.supported / cov.total) * 100) : 0;
+    host.className = "cmd-coverage";
+    host.innerHTML = `
+      <span class="cov-pct">${cov.supported}/${cov.total}</span>
+      <span class="cov-bar"><i style="width:${pct}%"></i></span>
+      <span class="muted-text">implemented by this build${
+        cov.missing.length ? ` · ${cov.missing.length} unavailable` : ""
+      }</span>
+    `;
   }
 
   async function promptCommand(type, info) {
@@ -297,6 +392,9 @@
 
     await loadFiles(dev.id);
     await loadLogs(dev.id);
+    await loadAudit();
+    renderAudit();
+    await refreshCatalogForDevice();
     refreshMirrorOnce();
     $("#notes-area").value = dev.notes || "";
     $("#tag-input").value = (dev.tags || []).join(", ");
@@ -657,6 +755,9 @@
 
     const mirrorRefresh = $("#mirror-refresh");
     if (mirrorRefresh) mirrorRefresh.addEventListener("click", refreshMirrorOnce);
+
+    const auditVerify = $("#audit-verify");
+    if (auditVerify) auditVerify.addEventListener("click", verifyAuditChain);
 
     const mirrorToggle = $("#mirror-stream-toggle");
     if (mirrorToggle) mirrorToggle.addEventListener("click", toggleMirror);

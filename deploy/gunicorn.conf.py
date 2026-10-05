@@ -42,11 +42,13 @@ keepalive = 65
 max_requests = 10000
 max_requests_jitter = 1000
 
-accesslog = "-"          # stdout, so journald captures it
+# No gunicorn access log: c2/logs.py emits one structured line per request,
+# already carrying method, path, status, duration, ip and request id. Two
+# access logs would be noise, and this one has none of those fields.
+accesslog = None
 errorlog = "-"
-loglevel = os.environ.get("C2_LOGLEVEL", "info")
-# Access logging on every socket frame is noise; keep it at warning.
-access_log_format = '%(h)s "%(r)s" %(s)s %(b)s %(M)sms'
+# Werkzeug's per-request lines are silenced inside c2/logs.configure().
+loglevel = os.environ.get("C2_LOG_LEVEL", "info")
 
 proc_name = "androidc2"
 

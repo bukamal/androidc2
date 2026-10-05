@@ -11,10 +11,9 @@ HEADERS = {"X-Api-Key": API_KEY}
 
 
 def _operator(client):
-    client.post("/login", data={"password": OPERATOR_PASSWORD})
-    token = client.get("/api/session").get_json()["csrf_token"]
-    client.environ_base["HTTP_X_CSRF_TOKEN"] = token
-    return client
+    from conftest import login
+
+    return login(client)
 
 
 def _queue(client, dev_pk, ctype="device_info", args=None):

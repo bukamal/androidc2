@@ -63,6 +63,7 @@ def bridge(live_server, tmp_path_factory):
     os.environ["TG_BOT_TOKEN"] = "000000:test"
     os.environ["TG_CHAT_ID"] = "1"
     os.environ["C2_BASE"] = live_server
+    os.environ["C2_OPERATOR_NAME"] = "tester"
     os.environ["C2_OPERATOR_PASSWORD"] = OPERATOR_PASSWORD
     os.environ["C2_API_KEY"] = "test-agent-key"
 
@@ -102,10 +103,17 @@ def test_bridge_queues_a_command_through_the_protected_route(bridge, make_device
 
 
 def test_bridge_recovers_a_dropped_session_on_its_own(bridge, make_device):
-    """A dead session is re-established instead of erroring out."""
+    """A stale session must be re-established, not fatal.
+
+    The cookie jar goes with it: a session that still passes the probe but has
+    a lost CSRF token answers 403 on every mutation, which is exactly the state
+    a long-running bridge ends up in after an expiry.
+    """
     dev_pk = make_device("bridge-recover")
+    run(bridge.c2_devices())          # make sure a session exists first
     bridge._c2_session_ok = False
     bridge._c2_csrf = ""
+    bridge.client.cookies.clear()
 
     result = run(bridge.c2_send_command(dev_pk, "device_info", {}))
     assert "error" not in result, result
@@ -113,12 +121,26 @@ def test_bridge_recovers_a_dropped_session_on_its_own(bridge, make_device):
     assert bridge._c2_csrf
 
 
+def test_bridge_recovers_from_a_stale_csrf(bridge, make_device):
+    """Cookie still valid but the CSRF token was lost: one retry, then it
+    works."""
+    dev_pk = make_device("bridge-csrf")
+    run(bridge.c2_devices())
+    bridge._c2_csrf = ""              # stale token, cookie still good
+
+    result = run(bridge.c2_send_command(dev_pk, "device_info", {}))
+    assert "error" not in result, result
+    assert bridge._c2_csrf
+
+
 def test_bridge_without_a_password_reports_no_session(bridge, make_device):
+    """With no credential at all it must say so instead of hammering a 401."""
     dev_pk = make_device("bridge-nopass")
     original = bridge.C2_PASSWORD
     bridge.C2_PASSWORD = ""
     bridge._c2_session_ok = False
     bridge._c2_csrf = ""
+    bridge.client.cookies.clear()
     try:
         assert run(bridge.c2_send_command(dev_pk, "device_info", {})) == \
             {"error": "no_session"}
@@ -130,6 +152,7 @@ def test_bridge_without_a_password_reports_no_session(bridge, make_device):
     finally:
         bridge.C2_PASSWORD = original
         bridge._c2_session_ok = False
+        bridge.client.cookies.clear()
 
 
 # ------------------------------------------------------------- md() escaping

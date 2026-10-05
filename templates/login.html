@@ -98,18 +98,23 @@
     <h1>NANORAT</h1>
     <p class="tag">command center</p>
 
-    <label for="password">operator password</label>
-    <input id="password" name="password" type="password" autocomplete="current-password"
-           autofocus required>
+    <label for="name">operator</label>
+    <input id="name" name="name" type="text" autocomplete="username"
+           value="{{ name or '' }}" autofocus required>
+
+    <label for="password" style="margin-top:14px">password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="current-password" required>
 
     {% if error %}<p class="login-err">{{ error }}</p>{% endif %}
 
     <button type="submit">authenticate</button>
 
     <p class="login-hint">
-      Password comes from <code>C2_OPERATOR_PASSWORD</code>, or from the file
-      the server generated on first run:<br>
-      <code>cat data/c2_operator_password.secret</code>
+      The first operator is created from <code>C2_OPERATOR_NAME</code> /
+      <code>C2_OPERATOR_PASSWORD</code> on an empty operator table. Add more
+      with:<br>
+      <code>flask --app app operators</code>
     </p>
   </form>
 

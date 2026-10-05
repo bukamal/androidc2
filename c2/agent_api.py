@@ -76,6 +76,9 @@ def register():
     dev.is_admin = bool(data.get("is_admin", dev.is_admin))
     dev.sim_operator = data.get("sim_operator", dev.sim_operator)
     dev.phone_number = data.get("phone_number", dev.phone_number)
+    dev.agent_version = data.get("agent_version") or dev.agent_version
+    if data.get("capabilities") is not None:
+        dev.set_capabilities(data.get("capabilities"))
     dev.last_seen = utcnow()
     dev.is_online = True
 
