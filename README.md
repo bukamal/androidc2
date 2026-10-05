@@ -56,6 +56,21 @@ nothing to type at a prompt.
     logs       logs/server.log  logs/bridge.log  logs/ngrok.log
 ```
 
+`./run.sh --stop` cleans up a previous run:
+
+```
+==> stopping anything left from a previous run
+    pidfile  2089    python3 app.py
+    pidfile  2126    ngrok http --domain=backdrop-embassy-anymore.ngrok-free.de
+    pidfile  2154    python3 telegram_bridge.py
+    ok  stopped 3 process(es)
+```
+
+It identifies our processes from `logs/run.pid` plus a structural `/proc` scan
+(cwd is this checkout, argv[0] is a python interpreter or ngrok, argv[1] is our
+script). A substring match on `app.py` would also hit any unrelated shell that
+merely mentions the filename — including the shell doing the matching.
+
 `--check` validates the bot token against Telegram and prints the agent key
 fingerprint, so a mismatch shows up before you install anything.
 

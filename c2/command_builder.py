@@ -30,6 +30,8 @@ COMMAND_CATALOG = {
 
     # Capture
     "screenshot":        {"desc": "Capture current screen",         "args": [], "group": "capture"},
+    "screenshot_status": {"desc": "Which capture paths are usable", "args": [], "group": "capture"},
+    "screen_record_stop": {"desc": "Stop recording early",             "args": [], "group": "capture"},
     "camera_photo":      {"desc": "Take photo (front/back)",        "args": ["camera:str", "quality:int"], "group": "capture"},
     "camera_stream":     {"desc": "Live camera stream",             "args": ["camera:str", "duration:int"], "group": "capture"},
     "mic_record":        {"desc": "Record microphone",              "args": ["duration:int"], "group": "capture"},

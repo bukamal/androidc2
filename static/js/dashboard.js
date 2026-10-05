@@ -21,6 +21,16 @@
   const $ = sel => document.querySelector(sel);
   const $$ = sel => document.querySelectorAll(sel);
 
+  // Published for palette.js / vitals.js. Everything else stays private.
+  window.__c2State = state;
+  window.__c2RefreshDevices = refreshDevices;
+  window.__c2RenderDeviceList = renderDeviceList;
+  window.__c2PromptCommand = promptCommand;
+  window.__c2OpenDevice = openDevice;
+  window.__c2VerifyAudit = verifyAuditChain;
+  window.__c2AgentUrl = () => (location.origin.startsWith("http://127.0.0.1")
+    ? (state.tunnelUrl || location.origin) : location.origin);
+
   // ═══════════ BOOT ═══════════
   window.addEventListener("DOMContentLoaded", boot);
 
@@ -36,6 +46,11 @@
     setInterval(refreshDevices, 15000);
     setInterval(flushQueue, 3000);
     C2.activity("🚀", "dashboard started", "info");
+
+    if (window.C2Vitals) window.C2Vitals.start(5000);
+    document.body.classList.add("ready");
+    renderDensity();
+    document.body.dataset.view = localStorage.getItem("c2.view") || state.view;
   }
 
   // ═══════════ AUDIT ═══════════
@@ -127,6 +142,11 @@
         cmd.status === "done" ? "✅" : "❌",
         `${cmd.command_type} ${cmd.status} (#${cmd.id})`,
         cmd.status === "done" ? "success" : "error"
+      );
+      C2.toast(
+        `${cmd.command_type} · ${cmd.status}`,
+        cmd.status === "done" ? "success" : "error",
+        3200
       );
       removeFromQueue(cmd.id);
       if (state.current && cmd.device_id === state.current.id) {
@@ -297,6 +317,40 @@
       ul.appendChild(li);
     });
   }
+
+  // ═══════════ DENSITY / VIEW ═══════════
+  const DENSITIES = ["comfortable", "compact"];
+
+  function renderDensity() {
+    const saved = localStorage.getItem("c2.density");
+    const mode = DENSITIES.includes(saved) ? saved : "comfortable";
+    document.body.dataset.density = mode;
+    const btn = $("#btn-density");
+    if (btn) {
+      btn.textContent = mode === "compact" ? "▤" : "▥";
+      btn.title = `density: ${mode}`;
+      btn.classList.toggle("active", mode === "compact");
+    }
+  }
+
+  function toggleDensity() {
+    const current = document.body.dataset.density || "comfortable";
+    const next = current === "compact" ? "comfortable" : "compact";
+    localStorage.setItem("c2.density", next);
+    renderDensity();
+    C2.toast(`density: ${next}`, "info", 1400);
+  }
+
+  function toggleView() {
+    state.view = state.view === "list" ? "grid" : "list";
+    document.body.dataset.view = state.view;
+    localStorage.setItem("c2.view", state.view);
+    renderDeviceList();
+    C2.toast(`view: ${state.view}`, "info", 1400);
+  }
+
+  window.__c2ToggleDensity = toggleDensity;
+  window.__c2ToggleView = toggleView;
 
   // ═══════════ RENDER CATALOG ═══════════
   function renderCatalog() {
@@ -682,11 +736,53 @@
   // ═══════════ UI WIRING ═══════════
   function wireUI() {
     const search = $("#global-search");
+    const searchClear = $("#search-clear");
+    const searchCount = $("#search-count");
+
     if (search) {
+      const syncSearchChrome = () => {
+        const query = search.value.trim();
+        if (searchClear) searchClear.hidden = query.length === 0;
+        if (searchCount) {
+          // Only useful while filtering; a bare total is just noise.
+          searchCount.textContent = query ? `${state.devices.length}` : "";
+        }
+      };
+
       search.addEventListener("input", () => {
         state.search = search.value;
         renderDeviceList();
+        syncSearchChrome();
       });
+
+      // "/" focuses the field and selects, so typing replaces rather than
+      // appends to whatever was there.
+      search.addEventListener("keydown", e => {
+        if (e.key === "Escape" && search.value) {
+          e.stopPropagation();          // do not also close the palette
+          e.preventDefault();
+          search.value = "";
+          state.search = "";
+          renderDeviceList();
+          syncSearchChrome();
+        } else if (e.key === "ArrowDown" || e.key === "Enter") {
+          const first = $("#device-list .dev-item");
+          if (first) {
+            e.preventDefault();
+            first.click();
+          }
+        }
+      });
+
+      if (searchClear) {
+        searchClear.addEventListener("click", () => {
+          search.value = "";
+          state.search = "";
+          renderDeviceList();
+          syncSearchChrome();
+          search.focus();
+        });
+      }
     }
 
     $$(".filter-chip").forEach(btn => {
@@ -716,15 +812,29 @@
       renderDeviceList();
     });
 
-    $$(".tabs button").forEach(btn => {
-      btn.addEventListener("click", () => {
-        $$(".tabs button").forEach(b => b.classList.remove("active"));
-        $$(".tab-panel").forEach(p => p.classList.remove("active"));
-        btn.classList.add("active");
-        const panel = document.querySelector(`[data-panel="${btn.dataset.tab}"]`);
-        if (panel) panel.classList.add("active");
+    const tabButtons = $$(".tabs button");
+    const tabStrip = $("#device-tabs");
+
+    // The indicator is sized purely from --i / --n, so it only needs the
+    // index — nothing to measure, and it cannot drift when the font loads or
+    // the strip scrolls.
+    if (tabStrip) tabStrip.style.setProperty("--n", String(tabButtons.length));
+
+    const selectTab = (btn) => {
+      tabButtons.forEach((b, i) => {
+        const on = b === btn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+        if (on && tabStrip) tabStrip.style.setProperty("--i", String(i));
       });
-    });
+      $$(".tab-panel").forEach(p => p.classList.remove("active"));
+      const panel = document.querySelector(`[data-panel="${btn.dataset.tab}"]`);
+      if (panel) panel.classList.add("active");
+      if (btn.dataset.tab === "commands") renderCatalog();
+      if (btn.dataset.tab === "logs") renderAudit();
+    };
+
+    tabButtons.forEach(btn => btn.addEventListener("click", () => selectTab(btn)));
 
     const notesSave = $("#notes-save");
     if (notesSave) notesSave.addEventListener("click", async () => {
@@ -763,10 +873,15 @@
     if (mirrorToggle) mirrorToggle.addEventListener("click", toggleMirror);
 
     const viewToggle = $("#btn-view-toggle");
-    if (viewToggle) viewToggle.addEventListener("click", () => {
-      state.view = state.view === "list" ? "grid" : "list";
-      C2.toast(`view: ${state.view}`, "info");
-    });
+    if (viewToggle) viewToggle.addEventListener("click", toggleView);
+
+    const densityToggle = $("#btn-density");
+    if (densityToggle) densityToggle.addEventListener("click", toggleDensity);
+
+    const paletteBtn = $("#btn-palette");
+    if (paletteBtn) {
+      paletteBtn.addEventListener("click", () => window.C2Palette.toggle());
+    }
 
     const soundToggle = $("#btn-sound");
     if (soundToggle) soundToggle.addEventListener("click", () => {

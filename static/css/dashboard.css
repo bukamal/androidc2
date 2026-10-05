@@ -42,7 +42,13 @@ body {
    ═══════════════════════════════════════════════════════ */
 #app {
   display: grid;
-  grid-template-rows: 60px 1fr;
+  /* One track per direct child of #app, in document order:
+     topbar (fixed) · vitals (auto) · main (everything left).
+     `minmax(0, 1fr)` rather than `1fr` so #main can shrink below its content
+     and scroll internally instead of pushing the page taller than the
+     viewport. Adding a child without adding a track here is what makes a
+     grid overlap — the extra child lands in an implicit row. */
+  grid-template-rows: 60px auto minmax(0, 1fr);
   height: 100vh;
   gap: 0;
 }
@@ -109,9 +115,6 @@ body {
 
 .search-icon {
   position: absolute;
-  left: 12px;
-  color: var(--muted);
-  font-size: 13px;
   pointer-events: none;
 }
 
@@ -120,7 +123,6 @@ body {
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 8px 12px 8px 34px;
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
@@ -147,10 +149,7 @@ body {
 .tstat {
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 10px;
   display: flex;
-  align-items: baseline;
   gap: 6px;
   font-family: var(--mono);
 }
@@ -233,7 +232,7 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.sidebar-head h2 {
+.sec-head h2 {
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
@@ -761,24 +760,16 @@ body {
   background: transparent;
   border: none;
   color: var(--muted);
-  padding: 13px 20px;
   font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
+  transition: color 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .tabs button:hover { color: var(--text); }
 
-.tabs button.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  background: rgba(0, 224, 255, 0.03);
-}
+.tabs button.active { color: var(--accent); }
 
 .tab-body {
   flex: 1;
@@ -1531,7 +1522,8 @@ body {
 }
 
 @media (max-width: 900px) {
-  #app { grid-template-rows: auto 1fr; }
+  /* Still three children, so still three tracks. */
+  #app { grid-template-rows: auto auto minmax(0, 1fr); }
   #main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
 
   #topbar {
@@ -1708,3 +1700,1054 @@ body {
 .audit-row .a-what code { color: #d7e3ee; background: none; padding: 0; }
 .audit-row .a-actor { color: #5d7085; }
 .audit-row .a-out   { color: #ff6b6b; font-size: 10px; letter-spacing: 1px; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   V2 — palette, vitals, density, motion
+   Additive layer. Everything above keeps working; this adds the newer
+   surfaces on top of the existing token set.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* elevation: used instead of ad-hoc rgba() shadows */
+  --e1: 0 1px 2px rgba(0, 0, 0, .4);
+  --e2: 0 4px 16px rgba(0, 0, 0, .45);
+  --e3: 0 18px 48px rgba(0, 0, 0, .6);
+  --edge: inset 0 1px 0 rgba(255, 255, 255, .04);
+
+  /* motion */
+  --fast: 120ms cubic-bezier(.4, 0, .2, 1);
+  --base: 200ms cubic-bezier(.4, 0, .2, 1);
+  --slow: 420ms cubic-bezier(.16, 1, .3, 1);
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+
+  --accent-alt: #7b5cff;
+  --glass: rgba(10, 13, 23, .72);
+}
+
+/* Respect the OS setting rather than animating regardless. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* ─── app frame ───────────────────────────────────────────────────────── */
+
+#app {
+  /* A very low-contrast aurora so the flat background stops reading as a
+     void. Fixed and non-interactive, so it costs nothing to composite. */
+  background:
+    radial-gradient(1100px 620px at 18% -10%, rgba(0, 224, 255, .07), transparent 60%),
+    radial-gradient(900px 520px at 88% 4%, rgba(123, 92, 255, .07), transparent 62%),
+    var(--bg);
+}
+
+body:not(.ready) #main { opacity: 0; }
+body.ready #main { opacity: 1; transition: opacity var(--slow); }
+
+/* ─── topbar ──────────────────────────────────────────────────────────── */
+
+#topbar {
+  height: 60px;          /* must equal #app's first grid track */
+  gap: 18px;
+  box-shadow: var(--e1), var(--edge);
+  backdrop-filter: blur(14px);
+  background: linear-gradient(180deg, rgba(12, 16, 28, .92), rgba(5, 6, 10, .92));
+}
+
+.brand .logo {
+  box-shadow: 0 0 0 1px rgba(0, 224, 255, .35), 0 0 22px rgba(0, 224, 255, .28);
+}
+
+.tstat {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: var(--e1), var(--edge);
+  transition: border-color var(--fast);
+}
+
+.tstat:hover { border-color: var(--border-2); transform: translateY(-1px); }
+
+.tstat span {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ─── palette trigger ─────────────────────────────────────────────────── */
+
+.palette-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 210px;
+  padding: 7px 9px 7px 11px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--muted);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color var(--fast), color var(--fast), box-shadow var(--fast);
+}
+
+.palette-trigger:hover {
+  color: var(--text-dim);
+  border-color: var(--border-2);
+  box-shadow: 0 0 0 3px rgba(0, 224, 255, .06);
+}
+
+.palette-trigger .pt-icon {
+  color: var(--accent);
+  font-size: 11px;
+  opacity: .8;
+}
+
+.palette-trigger .pt-label { flex: 1; text-align: left; }
+
+.palette-trigger kbd,
+.palette kbd {
+  padding: 2px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: #0a0e18;
+  border: 1px solid var(--border-2);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* ─── command palette ─────────────────────────────────────────────────── */
+
+.palette-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: none;
+}
+
+.palette-wrap.on { display: block; }
+
+.palette-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 4, 8, .72);
+  backdrop-filter: blur(6px) saturate(120%);
+  animation: pal-fade var(--base);
+}
+
+@keyframes pal-fade { from { opacity: 0; } }
+
+.palette {
+  position: relative;
+  width: min(680px, 92vw);
+  max-height: min(70vh, 560px);
+  margin: 12vh auto 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: linear-gradient(180deg, #0d1220, #080b13);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--e3), 0 0 0 1px rgba(0, 224, 255, .08),
+              0 0 70px rgba(0, 224, 255, .07);
+  animation: pal-in var(--slow);
+}
+
+@keyframes pal-in {
+  from { opacity: 0; transform: translateY(-10px) scale(.985); }
+}
+
+.palette-bar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, .015);
+}
+
+.palette-caret { color: var(--accent); font-size: 15px; opacity: .85; }
+
+#palette-input {
+  flex: 1;
+  font-family: var(--sans);
+  font-size: 15px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  outline: none;
+}
+
+#palette-input::placeholder { color: var(--muted-2); }
+
+.palette-list {
+  flex: 1;
+  margin: 0;
+  padding: 7px;
+  list-style: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+
+.palette-list::-webkit-scrollbar { width: 8px; }
+.palette-list::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 4px;
+}
+
+.pal-group {
+  padding: 9px 10px 5px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+.pal-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.pal-item .pal-icon {
+  width: 20px;
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.pal-item .pal-text { flex: 1; min-width: 0; }
+
+.pal-item .pal-title {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pal-item .pal-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pal-item .pal-hint {
+  flex-shrink: 0;
+  max-width: 40%;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pal-item.kind-command .pal-icon { color: var(--accent); }
+.pal-item.kind-device .pal-icon  { color: var(--accent-alt); }
+
+.pal-item.on {
+  background: linear-gradient(90deg, rgba(0, 224, 255, .13), rgba(0, 224, 255, .03));
+  border-color: rgba(0, 224, 255, .28);
+}
+
+.pal-item.on .pal-title { color: #fff; }
+.pal-item.on .pal-icon { color: var(--accent); }
+
+.pal-empty {
+  padding: 26px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pal-empty code {
+  padding: 2px 6px;
+  color: var(--accent);
+  background: rgba(0, 224, 255, .08);
+  border-radius: 4px;
+}
+
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 15px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--muted-2);
+  background: rgba(0, 0, 0, .2);
+}
+
+.palette-foot span { display: flex; align-items: center; gap: 5px; }
+.palette-count { margin-left: auto; font-family: var(--mono); }
+
+/* ─── vitals ──────────────────────────────────────────────────────────── */
+
+.vitals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: stretch;
+  gap: 1px;
+  padding: 0;
+  /* Contained so a wide tile or a long sparkline cannot stretch the row and
+     push #main off-screen. */
+  min-width: 0;
+  overflow: hidden;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.vital {
+  position: relative;
+  min-width: 0;
+  padding: 11px 14px 9px;
+  background: linear-gradient(180deg, #090c15, #06080e);
+  overflow: hidden;
+  cursor: default;
+  transition: background var(--fast);
+}
+
+.vital:hover { background: linear-gradient(180deg, #0c1019, #07090f); }
+
+.vital-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.vital-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 1.7px;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+.vital-delta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--muted-2);
+}
+
+.vital-delta.up   { color: var(--ok); }
+.vital-delta.down { color: var(--danger); }
+
+.vital-value {
+  margin: 3px 0 2px;
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.vital-unit {
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.vital .spark {
+  display: block;
+  max-width: 100%;
+  color: var(--accent);
+  opacity: .9;
+}
+.vital .spark.tone-ok   { color: var(--ok); }
+.vital .spark.tone-warn { color: var(--warn); }
+.vital .spark.tone-alt  { color: var(--accent-alt); }
+
+.vital-bar {
+  height: 2px;
+  margin-top: 5px;
+  background: #10161f;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.vital-bar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(0, 224, 255, .5), rgba(0, 224, 255, .12));
+  transition: width var(--base);
+}
+
+/* ─── density ─────────────────────────────────────────────────────────── */
+
+body[data-density="compact"] .dev-item,
+body[data-density="compact"] .file-card,
+body[data-density="compact"] .cmd-card {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+body[data-density="compact"] #device-list { gap: 3px; }
+body[data-density="compact"] .activity-item { padding: 3px 12px; }
+body[data-density="compact"] .audit-row { padding: 3px 8px; }
+body[data-density="compact"] .vital { padding: 8px 12px 6px; }
+body[data-density="compact"] .vital-value { font-size: 17px; }
+body[data-density="compact"] .vital .spark { height: 13px; }
+
+/* ─── focus + polish ──────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.cmd-card {
+  transition: transform var(--fast), border-color var(--fast),
+              box-shadow var(--fast), background var(--fast);
+}
+
+.cmd-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--e2), 0 0 0 1px rgba(0, 224, 255, .18);
+}
+
+.file-card:hover { transform: translateY(-2px); box-shadow: var(--e2); }
+
+.dev-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(0, 224, 255, .09), transparent 55%);
+  opacity: 0;
+  transition: opacity var(--base);
+  pointer-events: none;
+}
+
+.dev-item:hover::after { opacity: 1; }
+
+/* Scrollbars, once, everywhere. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover { background: #33406b; background-clip: content-box; }
+
+/* ─── narrow screens ──────────────────────────────────────────────────── */
+
+@media (max-width: 1200px) {
+  .palette-trigger { min-width: 46px; }
+  .palette-trigger .pt-label,
+  .palette-trigger kbd { display: none; }
+}
+
+@media (max-width: 900px) {
+  .topbar-stats .tstat:nth-child(n+3) { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   V3 — layout primitives
+
+   The previous topbar mixed five intrinsic heights (32 / 33 / 34 / 34 px
+   derived from padding, font-size and border combinations) and flex-centred
+   them, so nothing shared a baseline. Tabs were sized by their Arabic label
+   length and read as ragged. Section headings were four unrelated rules.
+
+   Everything below derives from three scales declared once:
+
+     --ctl-*   control heights   → every interactive element snaps to one
+     --fs-*    type scale        → headings come from a fixed ladder
+     --sp-*    spacing (4px base)→ gaps and padding are multiples, not vibes
+
+   Arabic first: the page is dir="rtl", so logical properties (inline-start,
+   padding-inline) are used throughout and nothing depends on left/right.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* control heights */
+  --ctl-sm: 28px;
+  --ctl-md: 34px;
+  --ctl-lg: 40px;
+
+  /* type scale — one ladder, no ad-hoc sizes */
+  --fs-2xs: 9.5px;
+  --fs-xs: 10.5px;
+  --fs-sm: 11.5px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 19px;
+  --fs-2xl: 25px;
+
+  /* spacing, 4px base */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 28px;
+
+  --lh-tight: 1.15;
+  --lh-body: 1.55;
+
+  --tr: 130ms cubic-bezier(.4, 0, .2, 1);
+  --tr-slow: 260ms cubic-bezier(.16, 1, .3, 1);
+}
+
+/* ═══════════════ TOPBAR ═══════════════ */
+
+#topbar {
+  display: grid;
+  /* Three zones. The middle one is the only one that flexes, and it is
+     capped, so zone 3 can never be pushed off the edge. */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: var(--sp-4);
+  height: 60px;
+  padding-inline: var(--sp-4);
+}
+
+.topbar-center {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* ─── zone 1: identity ─── */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-md);
+  min-width: 0;
+}
+
+.brand .logo {
+  flex: 0 0 auto;
+  width: var(--ctl-md);
+  height: var(--ctl-md);
+  border-radius: var(--r-sm);
+}
+
+/* Both lines sit on the control height: a two-line stack is optically
+   centred on the row, not taller than it. */
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: var(--lh-tight);
+  min-width: 0;
+}
+
+.brand-name {
+  font-family: var(--mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: .12em;
+  color: var(--text);
+}
+
+.brand-sub {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+/* ─── zone 2: search ─── */
+
+.search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 440px;
+  height: var(--ctl-md);
+}
+
+/* A real drawn glyph rather than an emoji: consistent metrics across
+   platforms, and it inherits the muted tone. */
+.search-icon {
+  position: absolute;
+  inset-inline-start: 11px;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  pointer-events: none;
+  transition: border-color var(--tr);
+}
+
+.search-icon::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 9px;
+  inset-inline-start: 9px;
+  width: 5px;
+  height: 1.5px;
+  background: var(--muted);
+  transform: rotate(45deg);
+  transform-origin: left center;
+  transition: background var(--tr);
+}
+
+.search-wrap:focus-within .search-icon { border-color: var(--accent); }
+.search-wrap:focus-within .search-icon::after { background: var(--accent); }
+
+#global-search {
+  width: 100%;
+  height: 100%;
+  padding-inline: 32px 74px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color var(--tr), box-shadow var(--tr), background var(--tr);
+}
+
+/* type="search" draws its own clear button in webkit; we supply our own. */
+#global-search::-webkit-search-decoration,
+#global-search::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+#global-search::placeholder { color: var(--muted-2); }
+
+#global-search:hover { border-color: var(--border-2); }
+
+#global-search:focus {
+  border-color: rgba(0, 224, 255, .5);
+  background: linear-gradient(180deg, #121828, #0b0f19);
+  box-shadow: 0 0 0 3px rgba(0, 224, 255, .1);
+}
+
+.search-clear {
+  position: absolute;
+  inset-inline-end: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color var(--tr), background var(--tr);
+}
+
+.search-clear:hover { color: var(--text); background: rgba(255, 255, 255, .06); }
+
+.search-count {
+  position: absolute;
+  inset-inline-end: 34px;
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--muted-2);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.search-count:empty { display: none; }
+
+/* ─── zone 2b: palette trigger ─── */
+
+.palette-trigger {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-md);
+  padding-inline: 10px;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color var(--tr), border-color var(--tr), box-shadow var(--tr);
+}
+
+.palette-trigger:hover {
+  color: var(--text-dim);
+  border-color: var(--border-2);
+  box-shadow: 0 0 0 3px rgba(0, 224, 255, .06);
+}
+
+.palette-trigger .pt-icon { color: var(--accent); opacity: .75; }
+
+.palette-trigger kbd {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: var(--fs-2xs);
+  line-height: 1;
+}
+
+/* ─── zone 3: counters ─── */
+
+.topbar-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.tstat {
+  /* Identical height to every other control in the bar. */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ctl-md);
+  padding-inline: 10px;
+  font-family: var(--mono);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: var(--e1), var(--edge);
+  transition: border-color var(--tr);
+}
+
+.tstat:hover { border-color: var(--border-2); }
+
+.tstat span {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.tstat label {
+  font-size: var(--fs-2xs);
+  line-height: 1;
+  letter-spacing: .06em;
+  color: var(--muted-2);
+}
+
+/* ─── zone 3b: icon controls ─── */
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.topbar-actions button {
+  width: var(--ctl-md);
+  height: var(--ctl-md);
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-md);
+  line-height: 1;
+  color: var(--text-dim);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color var(--tr), border-color var(--tr), box-shadow var(--tr);
+}
+
+.topbar-actions button:hover {
+  color: var(--accent);
+  border-color: rgba(0, 224, 255, .45);
+  box-shadow: 0 0 0 3px rgba(0, 224, 255, .07);
+}
+
+.topbar-actions button.active { color: var(--accent); border-color: rgba(0, 224, 255, .45); }
+
+/* ═══════════════ TABS ═══════════════
+   A segmented control, not a row of underlines.
+
+   Each tab is flex:1 so all seven share the width evenly regardless of how
+   long their Arabic label is — that was the ragged part. The indicator is one
+   element sized purely from --i and --n, so it needs no measurement and
+   animates exactly. */
+
+.tabs {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding-inline: var(--sp-3);
+  background: linear-gradient(180deg, rgba(0, 224, 255, .022), transparent);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+}
+
+.tabs::-webkit-scrollbar { display: none; }
+
+.tabs button {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  padding-inline: var(--sp-3);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  letter-spacing: .02em;
+  white-space: nowrap;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: color var(--tr);
+}
+
+.tabs button .tab-label { line-height: 1; }
+
+.tabs button:hover { color: var(--text); }
+
+.tabs button.active { color: var(--accent); }
+
+/* One element, positioned arithmetically: width is 1/n of the track and
+   offset is --i of them. No JS measurement, so it cannot drift from the
+   layout. */
+.tab-indicator {
+  position: absolute;
+  z-index: 0;
+  inset-block-end: 0;
+  inset-inline-start: var(--sp-3);
+  width: calc((100% - var(--sp-3) * 2) / var(--n));
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 2px 2px 0 0;
+  box-shadow: 0 0 12px var(--accent-glow);
+  transform: translateX(calc(var(--i) * 100%));
+  transition: transform var(--tr-slow);
+}
+
+/* rtl: the offset runs the other way, so mirror the sign */
+[dir="rtl"] .tab-indicator {
+  transform: translateX(calc(var(--i) * -100%));
+}
+
+.tab-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding-inline: 4px;
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  line-height: 1;
+  color: var(--accent);
+  background: rgba(0, 224, 255, .12);
+  border: 1px solid rgba(0, 224, 255, .28);
+  border-radius: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-badge[hidden] { display: none; }
+
+/* ═══════════════ SECTION HEADINGS ═══════════════
+   One component for every "title + optional count/action" row, so the
+   sidebar, the activity panel, the queue and the audit log all line up. */
+
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 40px;
+  padding-inline: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, .012);
+  flex: 0 0 auto;
+}
+
+.sec-head-sub { margin-top: var(--sp-3); border-top: 1px solid var(--border); }
+
+.sec-head-inline {
+  height: 34px;
+  padding-inline: 0;
+  background: none;
+}
+
+.sec-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sec-count {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sec-action {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding-inline: var(--sp-1);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color var(--tr), border-color var(--tr);
+}
+
+.sec-action:hover { color: var(--accent); border-color: rgba(0, 224, 255, .4); }
+
+/* Legacy aliases: the old class names stay valid so nothing that referenced
+   them silently stops matching. */
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding-inline: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.sec-head h2,
+.sidebar-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ═══════════════ FIELD / SEARCH VARIANT ═══════════════ */
+
+.field-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--ctl-md);
+  margin-bottom: var(--sp-3);
+}
+
+.field-search input {
+  width: 100%;
+  height: 100%;
+  padding-inline: var(--sp-3);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color var(--tr), box-shadow var(--tr);
+}
+
+.field-search input::-webkit-search-decoration,
+.field-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+.field-search input::placeholder { color: var(--muted-2); }
+
+.field-search input:focus {
+  border-color: rgba(0, 224, 255, .5);
+  box-shadow: 0 0 0 3px rgba(0, 224, 255, .1);
+}
+
+.cmd-search { margin-bottom: var(--sp-3); }
+.cmd-search input { width: 100%; }
+
+/* ═══════════════ RESPONSIVE ═══════════════ */
+
+@media (max-width: 1400px) {
+  .search-wrap { max-width: 320px; }
+  .palette-trigger .pt-label { display: none; }
+  .palette-trigger { padding-inline: var(--sp-2); }
+}
+
+@media (max-width: 1200px) {
+  /* Counters are the first thing to go: the search field matters more. */
+  .topbar-stats .tstat:nth-child(n+3) { display: none; }
+  #topbar { column-gap: var(--sp-3); }
+}
+
+@media (max-width: 1000px) {
+  .topbar-stats { display: none; }
+  .brand-sub { display: none; }
+  .tabs button { min-width: 78px; font-size: var(--fs-xs); }
+}
+
+@media (max-width: 760px) {
+  #topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: var(--sp-2);
+    padding-inline: var(--sp-3);
+  }
+  .brand-text { display: none; }
+  .search-wrap { max-width: none; }
+  #global-search { padding-inline-end: 46px; }
+  .topbar-actions button:not(#btn-logout):not(#btn-density) { display: none; }
+  .sec-head { padding-inline: var(--sp-3); }
+}
+
+body[data-density="compact"] .tabs button { height: 36px; }
+body[data-density="compact"] .sec-head { height: 32px; }
+body[data-density="compact"] .tstat { height: var(--ctl-sm); }

