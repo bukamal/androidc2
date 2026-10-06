@@ -301,7 +301,8 @@ def test_every_tab_button_shares_one_height():
 
 def test_tab_labels_are_wrapped_so_the_badge_can_sit_beside():
     html = HTML.read_text()
-    assert html.count('<span class="tab-label">') == 7, \
+    tabs = len(re.findall(r'data-tab="', html))
+    assert html.count('<span class="tab-label">') == tabs, \
         "every tab needs its label wrapped for the flex row to align"
     assert 'class="tab-indicator"' in html
 
@@ -344,7 +345,9 @@ def test_tabs_declare_their_count():
 def test_tabs_are_accessible():
     html = HTML.read_text()
     assert 'role="tablist"' in html
-    assert html.count('role="tab"') == 7
+    tabs = len(re.findall(r'data-tab="', html))
+    assert html.count('role="tab"') == tabs
+    assert tabs >= 8, f"expected the results tab alongside the original 7, got {tabs}"
     assert 'aria-selected="true"' in html
     assert 'class="tab-badge" id="tab-badge-commands"' in html
 

