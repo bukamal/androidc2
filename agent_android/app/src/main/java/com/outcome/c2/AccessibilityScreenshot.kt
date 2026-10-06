@@ -7,7 +7,6 @@ import android.graphics.ColorSpace
 import android.hardware.HardwareBuffer
 import android.os.Build
 import android.os.Environment
-import android.util.Log
 import android.view.Display
 import org.json.JSONObject
 import java.io.File
@@ -49,19 +48,15 @@ object AccessibilityScreenshot {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && service != null
 
     fun status(): JSONObject {
-        val s = service
         return JSONObject().apply {
             put("sdk", Build.VERSION.SDK_INT)
-            put("service_bound", s != null)
+            put("service_bound", service != null)
             put("supported", Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-            put("enabled", isEnabled(s))
+            // AccessibilityService has no isEnabled(). A non-null reference
+            // means onServiceConnected fired, which Android only delivers to a
+            // service the user actually enabled, so binding is the signal.
+            put("enabled", service != null)
         }
-    }
-
-    private fun isEnabled(s: AccessibilityService?): Boolean = try {
-        s?.isEnabled == true
-    } catch (_: Throwable) {
-        false
     }
 
     /**
@@ -74,11 +69,10 @@ object AccessibilityScreenshot {
                 "error", "accessibility_screenshot_needs_android_11"
             )
         }
+        // A bound instance is itself the proof the user enabled the service: Android
+        // only calls onServiceConnected for an enabled accessibility service.
         val svc = service
             ?: return JSONObject().put("error", "accessibility_service_not_bound")
-        if (!isEnabled(svc)) {
-            return JSONObject().put("error", "accessibility_service_disabled")
-        }
 
         val latch = CountDownLatch(1)
         var payload: JSONObject? = null
